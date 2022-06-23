@@ -20,12 +20,6 @@ def main(opt):
   torch.manual_seed(opt.seed)
   torch.backends.cudnn.benchmark = not opt.not_cuda_benchmark and not opt.test
   Dataset = get_dataset(opt.dataset, opt.task)
-
-  for i, data in enumerate(Dataset):
-    if i < 10:
-      print(f"hm {i}")
-      print(data['hm'])
-
   opt = opts().update_dataset_info_and_set_heads(opt, Dataset)
   print(opt)
 
@@ -45,6 +39,12 @@ def main(opt):
   Trainer = train_factory[opt.task]
   trainer = Trainer(opt, model, optimizer)
   trainer.set_device(opt.gpus, opt.chunk_sizes, opt.device)
+
+  print('Printing some heatmaps...')
+  for i, data in enumerate(Dataset(opt, 'train')):
+    if i < 10:
+      print(f"hm {i}")
+      print(data['hm'])
 
   print('Setting up data...')
   val_loader = torch.utils.data.DataLoader(
