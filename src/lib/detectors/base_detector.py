@@ -20,7 +20,7 @@ class BaseDetector(object):
     else:
       opt.device = torch.device('cpu')
     
-    print('Creating model...')
+    print('Creating model 222...')
     self.model = create_model(opt.arch, opt.heads, opt.head_conv)
     self.model = load_model(self.model, opt.load_model)
     self.model = self.model.to(opt.device)
@@ -137,7 +137,8 @@ class BaseDetector(object):
     tot_time += end_time - start_time
 
     if self.opt.debug >= 1:
-      self.show_results(debugger, image, results)
+      print(f"max hm value: {output['hm'].max()}, {output['hm'].sigmoid_().max()}")
+      self.show_results(debugger, image, results, output['hm'].sigmoid_())
     
     return {'results': results, 'tot': tot_time, 'load': load_time,
             'pre': pre_time, 'net': net_time, 'dec': dec_time,

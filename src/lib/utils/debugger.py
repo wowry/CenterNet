@@ -168,7 +168,7 @@ class Debugger(object):
       cv2.circle(self.imgs[img_id], (rect1[0], rect2[1]), int(10 * conf), c, 1)
       cv2.circle(self.imgs[img_id], (rect2[0], rect1[1]), int(10 * conf), c, 1)
 
-  def add_coco_bbox(self, bbox, cat, conf=1, show_txt=True, img_id='default'): 
+  def add_coco_bbox(self, bbox, cat, heatmap=None, conf=1, show_txt=True, img_id='default'): 
     bbox = np.array(bbox, dtype=np.int32)
     # cat = (int(cat) + 1) % 80
     cat = int(cat)
@@ -179,13 +179,20 @@ class Debugger(object):
     txt = '{}{:.1f}'.format(self.names[cat], conf)
     font = cv2.FONT_HERSHEY_SIMPLEX
     cat_size = cv2.getTextSize(txt, font, 0.5, 2)[0]
-    cv2.rectangle(
-      self.imgs[img_id], (bbox[0], bbox[1]), (bbox[2], bbox[3]), c, 2)
+
+    img = self.imgs[img_id]
+
+    if heatmap is not None:
+      heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
+      heatmap = np.uint8(255 * heatmap)
+      heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+
+    cv2.rectangle(img, (bbox[0], bbox[1]), (bbox[2], bbox[3]), c, 2)
     if show_txt:
-      cv2.rectangle(self.imgs[img_id],
+      cv2.rectangle(img,
                     (bbox[0], bbox[1] - cat_size[1] - 2),
                     (bbox[0] + cat_size[0], bbox[1] - 2), c, -1)
-      cv2.putText(self.imgs[img_id], txt, (bbox[0], bbox[1] - 2), 
+      cv2.putText(img, txt, (bbox[0], bbox[1] - 2), 
                   font, 0.5, (0, 0, 0), thickness=1, lineType=cv2.LINE_AA)
 
   def add_coco_hp(self, points, img_id='default'): 
