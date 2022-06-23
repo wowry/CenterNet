@@ -168,7 +168,7 @@ class Debugger(object):
       cv2.circle(self.imgs[img_id], (rect1[0], rect2[1]), int(10 * conf), c, 1)
       cv2.circle(self.imgs[img_id], (rect2[0], rect1[1]), int(10 * conf), c, 1)
 
-  def add_coco_bbox(self, bbox, cat, heatmap=None, conf=1, show_txt=True, img_id='default'): 
+  def add_coco_bbox(self, bbox, cat, output=None, conf=1, show_txt=True, img_id='default'): 
     bbox = np.array(bbox, dtype=np.int32)
     # cat = (int(cat) + 1) % 80
     cat = int(cat)
@@ -182,7 +182,8 @@ class Debugger(object):
 
     img = self.imgs[img_id]
 
-    if heatmap is not None:
+    if output is not None:
+      heatmap = output['hm'][0][0]
       heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
       heatmap = np.uint8(255 * heatmap)
       heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
