@@ -94,5 +94,37 @@ class CtdetDetector(BaseDetector):
     for j in range(1, self.num_classes + 1):
       for bbox in results[j]:
         if bbox[4] > self.opt.vis_thresh:
-          debugger.add_coco_bbox(bbox[:4], j - 1, bbox[4], output=output, img_id='ctdet')
+          #debugger.add_coco_bbox(bbox[:4], j - 1, bbox[4], output=output, img_id='ctdet')
+
+          bbox = bbox[:4]
+          cat = j - 1
+          conf=1
+          img_id='ctdet'
+          
+          bbox = np.array(bbox, dtype=np.int32)
+          # cat = (int(cat) + 1) % 80
+          cat = int(cat)
+          # print('cat', cat, self.names[cat])
+          c = self.colors[cat][0][0].tolist()
+          if self.theme == 'white':
+            c = (255 - np.array(c)).tolist()
+          txt = '{}{:.1f}'.format(self.names[cat], conf)
+          font = cv2.FONT_HERSHEY_SIMPLEX
+          cat_size = cv2.getTextSize(txt, font, 0.5, 2)[0]
+
+          img = self.imgs[img_id]
+
+          if output is not None:
+            heatmap = output['hm'][0][0]
+            heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
+            heatmap = np.uint8(255 * heatmap)
+            heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+
+          cv2.rectangle(img, (bbox[0], bbox[1]), (bbox[2], bbox[3]), c, 2)
+          cv2.rectangle(img,
+                        (bbox[0], bbox[1] - cat_size[1] - 2),
+                        (bbox[0] + cat_size[0], bbox[1] - 2), c, -1)
+          cv2.putText(img, txt, (bbox[0], bbox[1] - 2), 
+                      font, 0.5, (0, 0, 0), thickness=1, lineType=cv2.LINE_AA)
+                      
     debugger.show_all_imgs(pause=self.pause)
