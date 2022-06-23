@@ -476,8 +476,11 @@ class DLASeg(nn.Module):
             y.append(x[i].clone())
         self.ida_up(y, 0, len(y))
 
+        '''
+        backboneの結果を受け取ってheadに入力する
+        '''
         z = {}
-        for head in self.heads:
+        for head in self.heads: # hm (heatmap), wh (object size), reg (local offset)
             z[head] = self.__getattr__(head)(y[-1])
         return [z]
     
