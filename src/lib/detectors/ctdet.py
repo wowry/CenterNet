@@ -88,6 +88,8 @@ class CtdetDetector(BaseDetector):
                                  img_id='out_pred_{:.1f}'.format(scale))
 
   def show_results(self, debugger, image, results, heatmap):
+    print(f'test: {heatmap}')
+    
     debugger.add_img(image, img_id='ctdet')
     for j in range(1, self.num_classes + 1):
       for bbox in results[j]:
