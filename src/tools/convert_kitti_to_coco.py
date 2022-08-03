@@ -6,7 +6,7 @@ import pickle
 import json
 import numpy as np
 import cv2
-DATA_PATH = '../../data/kitti/'
+DATA_PATH = '/mnt/scratch/data/kitti/'
 DEBUG = False
 # VAL_PATH = DATA_PATH + 'training/label_val/'
 import os
@@ -147,6 +147,6 @@ for SPLIT in SPLITS:
     print("# images: ", len(ret['images']))
     print("# annotations: ", len(ret['annotations']))
     # import pdb; pdb.set_trace()
-    out_path = '{}/annotations/kitti_{}_{}.json'.format(DATA_PATH, SPLIT, split)
+    out_path = '{}annotations/kitti_{}_{}.json'.format(DATA_PATH, SPLIT, split)
     json.dump(ret, open(out_path, 'w'))
   
