@@ -14,6 +14,8 @@ from models.data_parallel import DataParallel
 from logger import Logger
 from datasets.dataset_factory import get_dataset
 from trains.train_factory import train_factory
+import matplotlib.pyplot as plt
+import numpy as np
 
 
 def main(opt):
@@ -65,9 +67,14 @@ def main(opt):
 
   print('Starting training...')
   best = 1e10
+
+  train_log_list = []
+  val_log_list = []
+
   for epoch in range(start_epoch + 1, opt.num_epochs + 1):
     mark = epoch if opt.save_all else 'last'
     log_dict_train, _ = trainer.train(epoch, train_loader)
+    train_log_list.append(log_dict_train)
     logger.write('epoch: {} |'.format(epoch))
     for k, v in log_dict_train.items():
       logger.scalar_summary('train_{}'.format(k), v, epoch)
@@ -77,6 +84,7 @@ def main(opt):
                  epoch, model, optimizer)
       with torch.no_grad():
         log_dict_val, preds = trainer.val(epoch, val_loader)
+        val_log_list.append(log_dict_val)
       for k, v in log_dict_val.items():
         logger.scalar_summary('val_{}'.format(k), v, epoch)
         logger.write('{} {:8f} | '.format(k, v))
@@ -88,14 +96,29 @@ def main(opt):
       save_model(os.path.join(opt.save_dir, 'model_last.pth'), 
                  epoch, model, optimizer)
     logger.write('\n')
-    if epoch in opt.lr_step:
-      save_model(os.path.join(opt.save_dir, 'model_{}.pth'.format(epoch)), 
+    save_model(os.path.join(opt.save_dir, 'model_{}.pth'.format(epoch)), 
                  epoch, model, optimizer)
+    if epoch in opt.lr_step:
       lr = opt.lr * (0.1 ** (opt.lr_step.index(epoch) + 1))
       print('Drop LR to', lr)
       for param_group in optimizer.param_groups:
           param_group['lr'] = lr
   logger.close()
+
+  if len(train_log_list) > 0:
+    x_train = np.arange(1, opt.num_epochs + 1)
+    for k in train_log_list[0]:
+      v = [d[k] for d in train_log_list]
+      plt.figure()
+      plt.plot(x_train, v)
+      plt.savefig(os.path.join(opt.save_dir, f"train-{k}.png"))
+  if len(val_log_list) > 0:
+    x_val = np.arange(5, opt.num_epochs + 1, 5)
+    for k in val_log_list[0]:
+      v = [d[k] for d in val_log_list]
+      plt.figure()
+      plt.plot(x_val, v)
+      plt.savefig(os.path.join(opt.save_dir, f"val-{k}.png"))
 
 if __name__ == '__main__':
   opt = opts().parse()
