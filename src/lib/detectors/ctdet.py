@@ -37,7 +37,7 @@ class CtdetDetector(BaseDetector):
         reg = reg[0:1] if reg is not None else None
       torch.cuda.synchronize()
       forward_time = time.time()
-      dets = ctdet_decode(hm, wh, reg=reg, cat_spec_wh=self.opt.cat_spec_wh, K=self.opt.K)
+      dets = ctdet_decode(hm, wh, reg=reg, cat_spec_wh=self.opt.cat_spec_wh, K=self.opt.K, device=self.opt.device)
       
     if return_time:
       return output, dets, forward_time
@@ -49,10 +49,7 @@ class CtdetDetector(BaseDetector):
     dets = dets.reshape(1, -1, dets.shape[2])
     dets = ctdet_post_process(
         dets.copy(), [meta['c']], [meta['s']],
-        meta['out_height'], meta['out_width'], self.opt.num_classes)
-    for j in range(1, self.num_classes + 1):
-      dets[0][j] = np.array(dets[0][j], dtype=np.float32).reshape(-1, 5)
-      dets[0][j][:, :4] /= scale
+        meta['out_height'], meta['out_width'], self.opt.num_classes, self.opt)
     return dets[0]
 
   def merge_outputs(self, detections):

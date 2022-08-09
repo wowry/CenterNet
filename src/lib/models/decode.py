@@ -461,7 +461,7 @@ def ddd_decode(heat, rot, depth, dim, wh=None, reg=None, K=40):
       
     return detections
 
-def ctdet_decode(heat, wh, reg=None, cat_spec_wh=False, K=100):
+def ctdet_decode(heat, wh, reg=None, cat_spec_wh=False, K=100, device=None):
     batch, cat, height, width = heat.size()
 
     # heat = torch.sigmoid(heat)
@@ -490,7 +490,15 @@ def ctdet_decode(heat, wh, reg=None, cat_spec_wh=False, K=100):
                         ys - wh[..., 1:2] / 2,
                         xs + wh[..., 0:1] / 2, 
                         ys + wh[..., 1:2] / 2], dim=2)
-    detections = torch.cat([bboxes, scores, clses], dim=2)
+    # detections = torch.cat([bboxes, scores, clses], dim=2)
+
+    l = torch.zeros(batch, K, 1).to(device=device)
+    dim = torch.cat([wh, l], dim=2)
+    rot = torch.zeros(batch, K, 8).to(device=device)
+    depth = torch.zeros(batch, K, 1).to(device=device)
+
+    detections = torch.cat(
+            [xs, ys, scores, rot, depth, dim, wh, clses], dim=2)
       
     return detections
 

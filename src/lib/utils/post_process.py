@@ -2,6 +2,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import torch
 import numpy as np
 from .image import transform_preds
 from .ddd_utils import ddd2locrot
@@ -46,7 +47,7 @@ def ddd_post_process_2d(dets, c, s, opt):
     ret.append(top_preds)
   return ret
 
-def ddd_post_process_3d(dets, calibs):
+def ddd_post_process_3d(dets, calibs=None):
   # dets: batch x max_dets x dim
   # return 1-based class det list
   ret = []
@@ -61,8 +62,13 @@ def ddd_post_process_3d(dets, calibs):
         depth = dets[i][cls_ind][j][4]
         dimensions = dets[i][cls_ind][j][5:8]
         wh = dets[i][cls_ind][j][8:10]
-        locations, rotation_y = ddd2locrot(
-          center, alpha, dimensions, depth, calibs[0])
+
+        if calibs is None:
+          locations = torch.zeros(3)
+          rotation_y = 0
+        else:
+          locations, rotation_y = ddd2locrot(
+            center, alpha, dimensions, depth, calibs[0])
         bbox = [center[0] - wh[0] / 2, center[1] - wh[1] / 2,
                 center[0] + wh[0] / 2, center[1] + wh[1] / 2]
         pred = [alpha] + bbox + dimensions.tolist() + \
@@ -80,24 +86,12 @@ def ddd_post_process(dets, c, s, calibs, opt):
   return dets
 
 
-def ctdet_post_process(dets, c, s, h, w, num_classes):
+def ctdet_post_process(dets, c, s, h, w, num_classes, opt):
   # dets: batch x max_dets x dim
   # return 1-based class det dict
-  ret = []
-  for i in range(dets.shape[0]):
-    top_preds = {}
-    dets[i, :, :2] = transform_preds(
-          dets[i, :, 0:2], c[i], s[i], (w, h))
-    dets[i, :, 2:4] = transform_preds(
-          dets[i, :, 2:4], c[i], s[i], (w, h))
-    classes = dets[i, :, -1]
-    for j in range(num_classes):
-      inds = (classes == j)
-      top_preds[j + 1] = np.concatenate([
-        dets[i, inds, :4].astype(np.float32),
-        dets[i, inds, 4:5].astype(np.float32)], axis=1).tolist()
-    ret.append(top_preds)
-  return ret
+  dets = ddd_post_process_2d(dets, c, s, opt)
+  dets = ddd_post_process_3d(dets)
+  return dets
 
 
 def multi_pose_post_process(dets, c, s, h, w):
