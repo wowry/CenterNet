@@ -713,13 +713,16 @@ void saveAndPlotPlots(string dir_name,string file_name,string obj_type,vector<do
   printf("save %s\n", (dir_name + "/" + file_name + ".txt").c_str());
   for (int32_t i=0; i<(int)N_SAMPLE_PTS; i++)
     fprintf(fp,"%f %f %f %f\n",(double)i/(N_SAMPLE_PTS-1.0),vals[0][i],vals[1][i],vals[2][i]);
-  fclose(fp);
 
   float sum[3] = {0, 0, 0};
   for (int v = 0; v < 3; ++v)
       for (int i = 0; i < vals[v].size(); i = i + 4)
           sum[v] += vals[v][i];
-  printf("%s AP: %f %f %f\n", file_name.c_str(), sum[0] / 11 * 100, sum[1] / 11 * 100, sum[2] / 11 * 100);
+  printf("\n>> %s AP: %f %f %f <<\n\n", file_name.c_str(), sum[0] / 11 * 100, sum[1] / 11 * 100, sum[2] / 11 * 100);
+
+  fprintf(fp, "%s AP: %f %f %f\n", file_name.c_str(), sum[0] / 11 * 100, sum[1] / 11 * 100, sum[2] / 11 * 100);
+
+  fclose(fp);
 
 
   // create png + eps
