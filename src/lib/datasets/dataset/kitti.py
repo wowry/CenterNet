@@ -75,9 +75,10 @@ class KITTI(data.Dataset):
       for cls_ind in results[img_id]:
         for j in range(len(results[img_id][cls_ind])):
           class_name = self.class_name[cls_ind]
-          f.write('{} 0.0 0'.format(class_name))
-          for i in range(len(results[img_id][cls_ind][j])):
+          f.write('{} 0.0 0 -10'.format(class_name))
+          for i in range(len(results[img_id][cls_ind][j])-1):
             f.write(' {:.2f}'.format(results[img_id][cls_ind][j][i]))
+          f.write(' 0.0 0.0 0.0 0.0 0.0 0.0 0.0 {:.2f}'.format(results[img_id][cls_ind][j][i+1]))
           f.write('\n')
       f.close()
 
