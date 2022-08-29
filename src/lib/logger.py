@@ -37,6 +37,11 @@ class Logger(object):
       for k, v in sorted(args.items()):
         opt_file.write('  %s: %s\n' % (str(k), str(v)))
           
+    if len(opt.message) > 0:
+      file_name = os.path.join(opt.save_dir, 'message.txt')
+      with open(file_name, 'wt') as message_file:
+        message_file.write(opt.message)
+    
     log_dir = opt.save_dir + '/logs_{}'.format(time_str)
     if USE_TENSORBOARD:
       self.writer = tensorboardX.SummaryWriter(log_dir=log_dir)
@@ -48,6 +53,7 @@ class Logger(object):
     self.log = open(log_dir + '/log.txt', 'w')
     try:
       os.system('cp {}/opt.txt {}/'.format(opt.save_dir, log_dir))
+      os.system('cp {}/message.txt {}/'.format(opt.save_dir, log_dir))
     except:
       pass
     self.start_line = True
