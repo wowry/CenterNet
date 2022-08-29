@@ -12,7 +12,7 @@ class opts(object):
     # basic experiment setting
     self.parser.add_argument('task', default='ctdet',
                              help='ctdet | ddd | multi_pose | exdet')
-    self.parser.add_argument('--dataset', default='coco',
+    self.parser.add_argument('--dataset', default='kitti',
                              help='coco | kitti | coco_hp | pascal')
     self.parser.add_argument('--exp_id', default='default')
     self.parser.add_argument('--test', action='store_true')
@@ -56,12 +56,14 @@ class opts(object):
                              help='visualization threshold.')
     self.parser.add_argument('--debugger_theme', default='white', 
                              choices=['white', 'black'])
+    self.parser.add_argument('-m', '--message', default='',
+                             help='messaage saved in log folder')
     
     # model
     self.parser.add_argument('--arch', default='dla_34', 
                              help='model architecture. Currently tested'
                                   'res_18 | res_101 | resdcn_18 | resdcn_101 |'
-                                  'dlav0_34 | dla_34 | hourglass')
+                                  'dlav0_34 | dla_34 | hourglass | certainnet_34')
     self.parser.add_argument('--head_conv', type=int, default=-1,
                              help='conv layer channels for output head'
                                   '0 for no conv layer'
@@ -69,6 +71,8 @@ class opts(object):
                                   '64 for resnets and 256 for dla.')
     self.parser.add_argument('--down_ratio', type=int, default=4,
                              help='output stride. Currently only supports 4.')
+    self.parser.add_argument('--eta', type=int, default=4,
+                             help='weight of the scores that are not axis-aligned.')
 
     # input
     self.parser.add_argument('--input_res', type=int, default=-1, 
@@ -97,6 +101,11 @@ class opts(object):
     self.parser.add_argument('--trainval', action='store_true',
                              help='include validation in training and '
                                   'test on test set')
+    self.parser.add_argument('--gamma', type=float, default=0.9,
+                             help='centroid momentum.')
+    self.parser.add_argument('--Lambda', type=int, default=20,
+                             help='weight on the center pixel '
+                                  'higher than its surroundings.')
 
     # test
     self.parser.add_argument('--flip_test', action='store_true',
@@ -134,6 +143,15 @@ class opts(object):
     self.parser.add_argument('--no_color_aug', action='store_true',
                              help='not use the color augmenation '
                                   'from CornerNet')
+
+    # CertainNet
+    self.parser.add_argument('--centroid_size', type=int, default=512,
+                             help='centroid size (dimensionality).')
+    self.parser.add_argument('--reg_weight', type=float, default=1e-2,
+                             help='weight for hyperspace regularization.')
+    self.parser.add_argument('--length_scale', type=float, default=2.5e-1,
+                             help="length scale of RBF kernel.")
+
     # multi_pose
     self.parser.add_argument('--aug_rot', type=float, default=0, 
                              help='probability of applying '
@@ -244,7 +262,7 @@ class opts(object):
     opt.reg_hp_offset = (not opt.not_reg_hp_offset) and opt.hm_hp
 
     if opt.head_conv == -1: # init default head_conv
-      opt.head_conv = 256 if 'dla' in opt.arch else 64
+      opt.head_conv = 256 if ('dla' in opt.arch) or ('certainnet' in opt.arch) else 64
     opt.pad = 127 if 'hourglass' in opt.arch else 31
     opt.num_stacks = 2 if opt.arch == 'hourglass' else 1
 
