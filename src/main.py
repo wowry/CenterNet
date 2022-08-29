@@ -31,7 +31,7 @@ def main(opt):
   opt.device = torch.device('cuda' if opt.gpus[0] >= 0 else 'cpu')
   
   print('Creating model...')
-  model = create_model(opt.arch, opt.heads, opt.head_conv)
+  model = create_model(opt.arch, opt.heads, opt.head_conv, opt)
   optimizer = torch.optim.Adam(model.parameters(), opt.lr)
   start_epoch = 0
   if opt.load_model != '':
