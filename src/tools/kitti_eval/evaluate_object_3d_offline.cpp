@@ -26,6 +26,9 @@ typedef boost::geometry::model::polygon<boost::geometry::model::d2::point_xy<dou
 
 using namespace std;
 
+#define EVAL_BIRDVIEW false
+#define EVAL_3D false
+
 /*=======================================================================
 STATIC EVALUATION PARAMETERS
 =======================================================================*/
@@ -721,6 +724,10 @@ void saveAndPlotPlots(string dir_name,string file_name,string obj_type,vector<do
           sum[v] += vals[v][i];
   printf("%s AP: %f %f %f\n", file_name.c_str(), sum[0] / 11 * 100, sum[1] / 11 * 100, sum[2] / 11 * 100);
 
+  // save AP score to file
+  FILE *fp_ap = fopen((dir_name + "/" + file_name + "_AP.txt").c_str(),"w");
+  fprintf(fp_ap, "%s AP: %f %f %f\n", file_name.c_str(), sum[0] / 11 * 100, sum[1] / 11 * 100, sum[2] / 11 * 100);
+  fclose(fp_ap);
 
   // create png + eps
   for (int32_t j=0; j<2; j++) {
@@ -872,6 +879,7 @@ bool eval(string gt_dir, string result_dir, Mail* mail){
     }
   }
 
+#if EVAL_BIRDVIEW
   // don't evaluate AOS for birdview boxes and 3D boxes
   compute_aos = false;
 
@@ -891,7 +899,8 @@ bool eval(string gt_dir, string result_dir, Mail* mail){
       saveAndPlotPlots(plot_dir, CLASS_NAMES[c] + "_detection_ground", CLASS_NAMES[c], precision, 0);
     }
   }
-
+#endif
+#if EVAL_3D
   // eval 3D bounding boxes
   for (int c = 0; c < NUM_CLASS; c++) {
     CLASSES cls = (CLASSES)c;
@@ -908,6 +917,7 @@ bool eval(string gt_dir, string result_dir, Mail* mail){
       saveAndPlotPlots(plot_dir, CLASS_NAMES[c] + "_detection_3d", CLASS_NAMES[c], precision, 0);
     }
   }
+#endif
 
   // success
   return true;
