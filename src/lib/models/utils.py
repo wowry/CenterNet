@@ -5,6 +5,9 @@ from __future__ import print_function
 import torch
 import torch.nn as nn
 
+def _clamp(x):
+  return torch.clamp(x, min=1e-4, max=1-1e-4)
+
 def _sigmoid(x):
   y = torch.clamp(x.sigmoid_(), min=1e-4, max=1-1e-4)
   return y

@@ -8,7 +8,7 @@ import numpy as np
 from models.losses import FocalLoss
 from models.losses import RegL1Loss, RegLoss, NormRegL1Loss, RegWeightedL1Loss
 from models.decode import ctdet_decode
-from models.utils import _sigmoid
+from models.utils import _sigmoid, _clamp
 from utils.debugger import Debugger
 from utils.post_process import ctdet_post_process
 from utils.oracle_utils import gen_oracle_map
@@ -25,13 +25,16 @@ class CtdetLoss(torch.nn.Module):
               RegWeightedL1Loss() if opt.cat_spec_wh else self.crit_reg
     self.opt = opt
 
-  def forward(self, outputs, batch):
+  def forward(self, outputs, batch, reg_loss=0, reg_weight=0):
     opt = self.opt
     hm_loss, wh_loss, off_loss = 0, 0, 0
     for s in range(opt.num_stacks):
       output = outputs[s]
       if not opt.mse_loss:
-        output['hm'] = _sigmoid(output['hm'])
+        if 'certainnet' in opt.arch:
+          output['hm'] = _clamp(output['hm'])
+        else:
+          output['hm'] = _sigmoid(output['hm'])
 
       if opt.eval_oracle_hm:
         output['hm'] = batch['hm']
@@ -69,8 +72,16 @@ class CtdetLoss(torch.nn.Module):
         
     loss = opt.hm_weight * hm_loss + opt.wh_weight * wh_loss + \
            opt.off_weight * off_loss
+    
+    if 'certainnet' in opt.arch:
+      loss += reg_weight * reg_loss
+    
     loss_stats = {'loss': loss, 'hm_loss': hm_loss,
                   'wh_loss': wh_loss, 'off_loss': off_loss}
+    
+    if 'certainnet' in opt.arch:
+      loss_stats['reg_loss'] = reg_loss
+    
     return loss, loss_stats
 
 class CtdetTrainer(BaseTrainer):
@@ -79,6 +90,8 @@ class CtdetTrainer(BaseTrainer):
   
   def _get_losses(self, opt):
     loss_states = ['loss', 'hm_loss', 'wh_loss', 'off_loss']
+    if 'certainnet' in opt.arch:
+      loss_states.append('reg_loss')
     loss = CtdetLoss(opt)
     return loss_states, loss
 

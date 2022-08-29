@@ -10,14 +10,21 @@ from utils.utils import AverageMeter
 
 
 class ModelWithLoss(torch.nn.Module):
-  def __init__(self, model, loss):
+  def __init__(self, arch, reg_weight, model, loss):
     super(ModelWithLoss, self).__init__()
+    self.arch = arch
+    self.reg_weight = reg_weight
     self.model = model
     self.loss = loss
   
   def forward(self, batch):
-    outputs = self.model(batch['input'])
-    loss, loss_stats = self.loss(outputs, batch)
+    if 'certainnet' in self.arch:
+      outputs, y_mapped = self.model(batch['input'])
+      reg_loss = self.model.calc_L_reg(batch['hm'], y_mapped)
+      loss, loss_stats = self.loss(outputs, batch, reg_loss, self.reg_weight)
+    else:
+      outputs = self.model(batch['input'])
+      loss, loss_stats = self.loss(outputs, batch)
     return outputs[-1], loss, loss_stats
 
 class BaseTrainer(object):
@@ -26,7 +33,7 @@ class BaseTrainer(object):
     self.opt = opt
     self.optimizer = optimizer
     self.loss_stats, self.loss = self._get_losses(opt)
-    self.model_with_loss = ModelWithLoss(model, self.loss)
+    self.model_with_loss = ModelWithLoss(opt.arch, opt.reg_weight, model, self.loss)
 
   def set_device(self, gpus, chunk_sizes, device):
     if len(gpus) > 1:
@@ -72,6 +79,12 @@ class BaseTrainer(object):
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+
+        if 'certainnet' in opt.arch:
+          with torch.no_grad():
+            model_with_loss.eval()
+            model_with_loss.module.model.update_embeddings(batch['input'], batch['hm'])
+          model_with_loss.train()
       batch_time.update(time.time() - end)
       end = time.time()
 
