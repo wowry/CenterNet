@@ -471,6 +471,7 @@ class CertainNet(nn.Module):
                 fill_fc_weights(fc)
             self.__setattr__(head, fc)
         
+        self.ablation = opt.ablation
         self.device = opt.device
         self.centroid_size = opt.centroid_size
         self.num_classes = opt.num_classes
@@ -533,6 +534,9 @@ class CertainNet(nn.Module):
         return reg_loss
     
     def update_embeddings(self, x, y):
+        sigma = self.length_scale
+        threshold = sigma * 3
+
         x = self.base(x)
         x = self.dla_up(x)
 
@@ -548,6 +552,14 @@ class CertainNet(nn.Module):
 
         for c, (hm, hm_mapped) in enumerate(zip(y, y_mapped)):
             ec = self.e[:, c]
+
+            # remove outliers
+            if self.ablation >= 3:
+                diff = (hm_mapped - ec.unsqueeze(0)).norm(2, dim=1)
+                inliers = (diff <= threshold).nonzero().squeeze()
+                if inliers.numel() > 0:
+                    hm = torch.index_select(hm, 0, inliers)
+                    hm_mapped = torch.index_select(hm_mapped, 0, inliers)
             
             y_lambda = hm ** self.Lambda
             prod = y_lambda.unsqueeze(1) * hm_mapped
