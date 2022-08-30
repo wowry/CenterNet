@@ -145,6 +145,11 @@ class opts(object):
                                   'from CornerNet')
 
     # CertainNet
+    self.parser.add_argument('--ablation', type=int, default=6,
+                             help='ID number of ablation study: 2 | 3 | 4 | 5 | 6. '
+                                  '(2: adapted DUQ, Lreg and balanced update, 3: outlier protection, '
+                                  '4: momentum scheduling, 5: length scale annealing, '
+                                  '6: freeze last 10 epochs)')
     self.parser.add_argument('--centroid_size', type=int, default=512,
                              help='centroid size (dimensionality).')
     self.parser.add_argument('--reg_weight', type=float, default=1e-2,
