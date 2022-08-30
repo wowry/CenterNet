@@ -31,6 +31,7 @@ class BaseTrainer(object):
   def __init__(
     self, opt, model, optimizer=None):
     self.opt = opt
+    self.model = model
     self.optimizer = optimizer
     self.loss_stats, self.loss = self._get_losses(opt)
     self.model_with_loss = ModelWithLoss(opt.arch, opt.reg_weight, model, self.loss)
@@ -70,6 +71,10 @@ class BaseTrainer(object):
         break
       data_time.update(time.time() - end)
 
+      if 'certainnet' in opt.arch and opt.ablation >= 5:
+        if opt.length_scale > 5e-2:
+          opt.length_scale *= 0.999
+
       for k in batch:
         if k != 'meta':
           batch[k] = batch[k].to(device=opt.device, non_blocking=True)    
@@ -83,7 +88,7 @@ class BaseTrainer(object):
         if 'certainnet' in opt.arch:
           with torch.no_grad():
             model_with_loss.eval()
-            model_with_loss.module.model.update_embeddings(batch['input'], batch['hm'])
+            self.model.update_embeddings(batch['input'], batch['hm'])
           model_with_loss.train()
       batch_time.update(time.time() - end)
       end = time.time()
