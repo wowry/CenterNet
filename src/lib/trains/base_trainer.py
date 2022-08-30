@@ -66,6 +66,19 @@ class BaseTrainer(object):
     num_iters = len(data_loader) if opt.num_iters < 0 else opt.num_iters
     bar = Bar('{}/{}'.format(opt.task, opt.exp_id), max=num_iters)
     end = time.time()
+
+    if 'certainnet' in opt.arch and opt.ablation >= 6:
+      # freeze params for the last 10 epochs, except for the objectness head params
+      num_freeze_epochs = 10
+      freeze_epoch = opt.num_epochs - num_freeze_epochs + 1
+      if epoch == freeze_epoch:
+        print(f'freeze params for the last {num_freeze_epochs} epochs')
+      if epoch >= freeze_epoch:
+        for param in self.model.parameters():
+          param.requires_grad_(False)
+        for c in range(opt.num_classes):
+          self.model.__getattr__(f'conv1x1_{c}').requires_grad_(True)
+
     for iter_id, batch in enumerate(data_loader):
       if iter_id >= num_iters:
         break
