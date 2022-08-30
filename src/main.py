@@ -71,7 +71,21 @@ def main(opt):
   train_log_list = []
   val_log_list = []
 
+  # epochs of increasing momentum
+  m_epochs = [5, 20, 60]
+
   for epoch in range(start_epoch + 1, opt.num_epochs + 1):
+    if 'certainnet' in opt.arch and opt.ablation >= 4:
+      if epoch in m_epochs:
+        if epoch == m_epochs[0]:
+          gamma = 0.99
+        elif epoch == m_epochs[1]:
+          gamma = 0.999
+        elif epoch == m_epochs[2]:
+          gamma = 0.9999      
+        opt.gamma = gamma
+        print('Increase momentum to', opt.gamma)
+
     mark = epoch if opt.save_all else 'last'
     log_dict_train, _ = trainer.train(epoch, train_loader)
     train_log_list.append(log_dict_train)
