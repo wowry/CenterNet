@@ -12,6 +12,9 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import torch.utils.model_zoo as model_zoo
+import matplotlib.pyplot as plt
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
 
 from .DCNv2.dcn_v2 import DCN
 
@@ -478,6 +481,7 @@ class CertainNet(nn.Module):
         self.gamma = opt.gamma
         self.Lambda = opt.Lambda
         self.length_scale = opt.length_scale
+        self.save_dir = opt.save_dir
 
         self.register_buffer(
             "e", torch.normal(torch.zeros(opt.centroid_size, opt.num_classes), 0.05)
@@ -485,6 +489,7 @@ class CertainNet(nn.Module):
 
         for c in range(opt.num_classes):
             self.__setattr__(f'conv1x1_{c}', conv1x1(channels[self.first_level], opt.centroid_size))
+            nn.init.kaiming_normal_(self.__getattr__(f'conv1x1_{c}').weight, nonlinearity="relu")
     
     def transform(self, y_pred):
         y_mapped = []
@@ -533,19 +538,24 @@ class CertainNet(nn.Module):
         reg_loss = prod_sum / y_sum
         return reg_loss
     
+    def get_hm_coord(self, x):
+        x = self.base(x)
+        x = self.dla_up(x)
+
+        y = []
+        for i in range(self.last_level - self.first_level):
+            y.append(x[i].clone())
+        self.ida_up(y, 0, len(y))
+
+        _, y_mapped = self.rbf(y[-1])
+
+        return y_mapped
+    
     def update_embeddings(self, x, y):
         sigma = self.length_scale
         threshold = sigma * 3
 
-        x = self.base(x)
-        x = self.dla_up(x)
-
-        y_pred = []
-        for i in range(self.last_level - self.first_level):
-            y_pred.append(x[i].clone())
-        self.ida_up(y_pred, 0, len(y_pred))
-
-        _, y_mapped = self.rbf(y_pred[-1])
+        y_mapped = self.get_hm_coord(x)
 
         y_mapped = y_mapped.permute(2, 0, 1)
         y = y.permute(1, 0, 2, 3).reshape(y.size()[1], -1)
@@ -566,6 +576,29 @@ class CertainNet(nn.Module):
             
             if y_lambda.sum(0) != 0:
                 self.e[:, c] = self.gamma * ec + ((1 - self.gamma) / y_lambda.sum(0)) * prod.sum(0)
+
+    def save_reduced_samples(self, x, colormap=plt.cm.Paired):
+        num_samples = 10
+
+        y_mapped = self.get_hm_coord(x)
+        y_mapped = y_mapped.permute(2, 0, 1).detach().cpu().numpy()
+
+        for c, hm in enumerate(y_mapped):
+            hm = hm[::int(hm.shape[0] / num_samples), :]
+
+            ## t-SNE
+            tsne = TSNE(n_components=2, random_state=1)
+            tsne_reduced = tsne.fit_transform(hm)
+
+            ## PCA
+            pca = PCA(n_components=2, random_state=1)
+            pca_reduced = pca.fit_transform(hm)
+
+            """ file_name = os.path.join(self.save_dir, f't-sne/{c}/message.txt')
+            with open(file_name, 'wt') as message_file:
+                message_file.write(opt.message)
+            print(f"\nsave_reduced_samples =======================")
+            print(tsne_reduced.shape, pca_reduced.shape) """
 
     def forward(self, x):
         x = self.base(x)
