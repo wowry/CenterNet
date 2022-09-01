@@ -12,7 +12,13 @@ import os
 import math
 
 import torch.utils.data as data
+import tools.kitti_eval.tool.kitti_common as kitti
+from tools.kitti_eval.tool.eval import get_official_eval_result, get_coco_eval_result
 
+def _read_imageset_file(path):
+    with open(path, 'r') as f:
+        lines = f.readlines()
+    return [int(line) for line in lines]
 
 class KITTI(data.Dataset):
   num_classes = 3
@@ -84,7 +90,15 @@ class KITTI(data.Dataset):
 
   def run_eval(self, results, save_dir):
     self.save_results(results, save_dir)
-    os.system('./tools/kitti_eval/evaluate_object_3d_offline ' + \
+    """ os.system('./tools/kitti_eval/evaluate_object_3d_offline ' + \
               '/mnt/scratch/data/kitti/training/label_2 ' + \
-              '{}/results/'.format(save_dir))
+              '{}/results/'.format(save_dir)) """
+    
+    det_path = '{}/results/'.format(save_dir)
+    dt_annos = kitti.get_label_annos(det_path)
+    gt_path = '/mnt/scratch/data/kitti/training/label_2'
+    gt_split_file = "/mnt/scratch/data/kitti/ImageSets_3dop/val.txt"
+    val_image_ids = _read_imageset_file(gt_split_file)
+    gt_annos = kitti.get_label_annos(gt_path, val_image_ids)
+    print(get_official_eval_result(gt_annos, dt_annos, (0, 1, 2)))
     
