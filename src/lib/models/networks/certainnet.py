@@ -514,7 +514,7 @@ class CertainNet(nn.Module):
 
         return diff, y_mapped
     
-    def calc_L_reg(self, y, y_mapped):
+    def calc_Lreg(self, y, y_mapped):
         Lambda = self.Lambda
         sigma = self.length_scale
 
@@ -535,7 +535,8 @@ class CertainNet(nn.Module):
             prod_sum += prod.sum()
             y_sum += y_lambda.sum()
         
-        reg_loss = prod_sum / y_sum
+        denom = torch.clamp(y_sum, min=1) / (sigma ** 2)
+        reg_loss = prod_sum / denom
         return reg_loss
     
     def get_hm_coord(self, x):
