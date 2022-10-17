@@ -6,7 +6,7 @@ import pickle
 import json
 import numpy as np
 import cv2
-DATA_PATH = '/mnt/scratch/data/kitti/'
+DATA_PATH = '../../data/kitti/'
 DEBUG = False
 # VAL_PATH = DATA_PATH + 'training/label_val/'
 import os

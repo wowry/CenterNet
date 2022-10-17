@@ -71,12 +71,11 @@ class KITTI(data.Dataset):
   def convert_eval_format(self, all_bboxes):
     pass
 
-  def save_results(self, results, save_dir):
-    results_dir = os.path.join(save_dir, 'results')
-    if not os.path.exists(results_dir):
-      os.mkdir(results_dir)
+  def save_results(self, results):
+    if not os.path.exists(self.results_dir):
+      os.makedirs(self.results_dir)
     for img_id in results.keys():
-      out_path = os.path.join(results_dir, '{:06d}.txt'.format(img_id))
+      out_path = os.path.join(self.results_dir, '{:06d}.txt'.format(img_id))
       f = open(out_path, 'w')
       for cls_ind in results[img_id]:
         for j in range(len(results[img_id][cls_ind])):
@@ -89,16 +88,19 @@ class KITTI(data.Dataset):
       f.close()
 
   def run_eval(self, results, save_dir):
-    self.save_results(results, save_dir)
-    """ os.system('./tools/kitti_eval/evaluate_object_3d_offline ' + \
-              '/mnt/scratch/data/kitti/training/label_2 ' + \
-              '{}/results/'.format(save_dir)) """
+    self.results_dir = os.path.join(save_dir, f'results/{self.opt.dataset}')
+    self.save_results(results)
     
-    det_path = '{}/results/'.format(save_dir)
+    det_path = self.results_dir
     dt_annos = kitti.get_label_annos(det_path)
-    gt_path = '/mnt/scratch/data/kitti/training/label_2'
-    gt_split_file = "/mnt/scratch/data/kitti/ImageSets_3dop/val.txt"
+    gt_path = os.path.join(self.opt.data_dir, 'kitti/training/label_2')
+    gt_split_file = os.path.join(gt_path, '../../ImageSets_3dop/val.txt')
     val_image_ids = _read_imageset_file(gt_split_file)
     gt_annos = kitti.get_label_annos(gt_path, val_image_ids)
-    print(get_official_eval_result(gt_annos, dt_annos, (0, 1, 2)))
+    result = get_official_eval_result(gt_annos, dt_annos, (0, 1, 2), self.opt.dataset, save_dir)
+
+    ap_file = os.path.join(save_dir, f'results_ap_{self.opt.dataset}.txt')
+    with open(ap_file, "w") as f:
+      f.write(result)
+    print(result)
     
