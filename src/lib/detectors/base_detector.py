@@ -11,10 +11,12 @@ import torch
 from models.model import create_model, load_model
 from utils.image import get_affine_transform
 from utils.debugger import Debugger
+from lib.utils.gmm_utils import get_embeddings, gmm_fit, gmm_forward
+import utils.uncertainty_confidence as uncertainty_confidence
 
 
 class BaseDetector(object):
-  def __init__(self, opt):
+  def __init__(self, opt, wandb):
     if opt.gpus[0] >= 0:
       opt.device = torch.device('cuda')
     else:
@@ -79,7 +81,7 @@ class BaseDetector(object):
   def show_results(self, debugger, image, results):
    raise NotImplementedError
 
-  def run(self, image_or_path_or_tensor, meta=None):
+  def run(self, image_or_path_or_tensor, gmm_dict=None, meta=None):
     load_time, pre_time, net_time, dec_time, post_time = 0, 0, 0, 0, 0
     merge_time, tot_time = 0, 0
     debugger = Debugger(dataset=self.opt.dataset, ipynb=(self.opt.debug==3),
@@ -97,48 +99,84 @@ class BaseDetector(object):
     
     loaded_time = time.time()
     load_time += (loaded_time - start_time)
+
+    opt = self.opt
     
     detections = []
+    indices = []
+    uncertainties = []
     for scale in self.scales:
       scale_start_time = time.time()
       if not pre_processed:
         images, meta = self.pre_process(image, scale, meta)
       else:
         # import pdb; pdb.set_trace()
-        images = pre_processed_images['images'][scale][0]
+        images = pre_processed_images['images'][scale][0] # 2, 3, 384, 1280
         meta = pre_processed_images['meta'][scale]
         meta = {k: v.numpy()[0] for k, v in meta.items()}
-      images = images.to(self.opt.device)
+      images = images.to(opt.device)
       torch.cuda.synchronize()
       pre_process_time = time.time()
       pre_time += pre_process_time - scale_start_time
       
-      output, dets, forward_time = self.process(images, return_time=True)
+      output, dets, inds, uncs, forward_time = self.process(images, return_time=True)
 
       torch.cuda.synchronize()
       net_time += forward_time - pre_process_time
       decode_time = time.time()
       dec_time += decode_time - forward_time
       
-      if self.opt.debug >= 2:
+      if opt.debug >= 2:
         self.debug(debugger, images, dets, output, scale)
       
-      dets = self.post_process(dets, meta, scale)
+      dets, uncs = self.post_process(dets, uncs, meta, scale)
       torch.cuda.synchronize()
       post_process_time = time.time()
       post_time += post_process_time - decode_time
 
       detections.append(dets)
+      indices.append(inds)
+      uncertainties.append(uncs)
     
     results = self.merge_outputs(detections)
+    indices = indices[0] # TODO: move into merge_outputs
+    uncertainties = uncertainties[0] # TODO: move into merge_outputs
+
+    torch.cuda.synchronize()
+    
+    gmm_results = {}
+    if gmm_dict is not None:
+      gaussians_model = gmm_dict['gaussians_model']
+      train_min_density = gmm_dict['train_min_density']
+      log_probs_B_Y = gmm_forward(self.model, gaussians_model, indices[0], opt.output_w, opt.num_classes, opt.device, opt.flip_test)
+      if log_probs_B_Y is not None:
+        density = uncertainty_confidence.logsumexp(log_probs_B_Y)
+        uncertainty = density - train_min_density
+      else:
+        density, uncertainty = None, None
+      torch.cuda.synchronize()
+
+      gmm_results['density'] = density
+      gmm_results['e_uncertainty'] = uncertainty
+
+      all_hm = output['hm'] # 1, 3, 96, 320
+      r = torch.div(indices[0], opt.output_w, rounding_mode='floor')
+      c = indices[0] % opt.output_w
+      logits = all_hm[0, :, r, c].permute(1, 0) # 100, 3
+      entropy = uncertainty_confidence.entropy(logits)
+      torch.cuda.synchronize()
+
+      gmm_results['logits'] = logits
+      gmm_results['entropy'] = entropy
+
     torch.cuda.synchronize()
     end_time = time.time()
     merge_time += end_time - post_process_time
     tot_time += end_time - start_time
 
-    if self.opt.debug >= 1:
+    if opt.debug >= 1:
       self.show_results(debugger, image, results)
-    
-    return {'results': results, 'tot': tot_time, 'load': load_time,
+        
+    return {'results': results, 'ind': indices, 'gmm_results': gmm_results, 'uncs': uncertainties, 'tot': tot_time, 'load': load_time,
             'pre': pre_time, 'net': net_time, 'dec': dec_time,
             'post': post_time, 'merge': merge_time}

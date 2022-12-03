@@ -5,6 +5,7 @@ debug/*
 *.json
 *.mat
 src/.vscode/*
+src/wandb/*
 preds/*
 *.h5
 *.pth

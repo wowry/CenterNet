@@ -16,6 +16,7 @@ from datasets.dataset_factory import get_dataset
 from trains.train_factory import train_factory
 import matplotlib.pyplot as plt
 import numpy as np
+import wandb
 
 
 def main(opt):
@@ -25,6 +26,11 @@ def main(opt):
   opt = opts().update_dataset_info_and_set_heads(opt, Dataset)
   print(opt)
 
+  wandb.init(
+    project=f'{opt.dataset}_{opt.task}',
+    name=f'{opt.exp_id}_train',
+    group=opt.exp_id,
+    config=opt)
   logger = Logger(opt)
 
   os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpus_str
@@ -90,9 +96,15 @@ def main(opt):
     log_dict_train, _ = trainer.train(epoch, train_loader)
     train_log_list.append(log_dict_train)
     logger.write('epoch: {} |'.format(epoch))
+
+    wandb_logs = {'epoch': epoch}
     for k, v in log_dict_train.items():
       logger.scalar_summary('train_{}'.format(k), v, epoch)
       logger.write('{} {:8f} | '.format(k, v))
+      wandb_logs['train_{}'.format(k)] = v
+    wandb.log(wandb_logs)
+    wandb.watch(model)
+    
     if opt.val_intervals > 0 and epoch % opt.val_intervals == 0:
       save_model(os.path.join(opt.save_dir, 'model_{}.pth'.format(mark)), 
                  epoch, model, optimizer)
@@ -109,6 +121,7 @@ def main(opt):
     else:
       save_model(os.path.join(opt.save_dir, 'model_last.pth'), 
                  epoch, model, optimizer)
+      wandb.save("model_last.pth")
     logger.write('\n')
     if (epoch in opt.lr_step) or (epoch % 10 == 0):
       save_model(os.path.join(opt.save_dir, 'model_{}.pth'.format(epoch)), 

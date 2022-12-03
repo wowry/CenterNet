@@ -5,14 +5,13 @@ from __future__ import print_function
 import numpy as np
 import cv2
 from .ddd_utils import compute_box_3d, project_to_image, draw_box_3d
+import matplotlib.pyplot as plt
 
 class Debugger(object):
   def __init__(self, ipynb=False, theme='black', 
                num_classes=-1, dataset=None, down_ratio=4):
     self.ipynb = ipynb
-    if not self.ipynb:
-      import matplotlib.pyplot as plt
-      self.plt = plt
+    self.plt = plt
     self.imgs = {}
     self.theme = theme
     colors = [(color_list[_]).astype(np.uint8) \
@@ -57,11 +56,13 @@ class Debugger(object):
       self.W = 1920
       self.H = 1080
       self.dim_scale = 3
-    elif num_classes == 3 or dataset == 'kitti':
+    elif 'kitti' in dataset:
       self.names = kitti_class_name
       self.focal_length = 721.5377
       self.W = 1242
       self.H = 375
+    elif dataset == 'bdd':
+      self.names = bdd_class_name
     num_classes = len(self.names)
     self.down_ratio=down_ratio
     # for bird view
@@ -213,7 +214,7 @@ class Debugger(object):
                    3, (int(c[0]), int(c[1]), int(c[2])), -1)
 
   def show_all_imgs(self, pause=False, time=0):
-    if not self.ipynb:
+    if self.ipynb:
       for i, v in self.imgs.items():
         cv2.imshow('{}'.format(i), v)
       if cv2.waitKey(0 if pause else 1) == 27:
@@ -222,7 +223,8 @@ class Debugger(object):
     else:
       self.ax = None
       nImgs = len(self.imgs)
-      fig=self.plt.figure(figsize=(nImgs * 10,10))
+      fig=self.plt.figure(dpi=100, figsize=(nImgs * 12.42, 3.75))
+      fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
       nCols = nImgs
       nRows = nImgs // nCols
       for i, (k, v) in enumerate(self.imgs.items()):
@@ -231,7 +233,9 @@ class Debugger(object):
           self.plt.imshow(cv2.cvtColor(v, cv2.COLOR_BGR2RGB))
         else:
           self.plt.imshow(v)
-      self.plt.show()
+      #self.plt.show()
+      self.plt.axis("off")
+      self.plt.savefig("test.jpg")
 
   def save_img(self, imgId='default', path='./cache/debug/'):
     cv2.imwrite(path + '{}.png'.format(imgId), self.imgs[imgId])
@@ -429,7 +433,7 @@ class Debugger(object):
 
 
 kitti_class_name = [
-  'p', 'v', 'b'
+  'pedestrian', 'car', 'cyclist'
 ]
 
 gta_class_name = [
@@ -455,6 +459,8 @@ coco_class_name = [
      'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase',
      'scissors', 'teddy bear', 'hair drier', 'toothbrush'
 ]
+
+bdd_class_name = ['pedestrian', 'car', 'rider']
 
 color_list = np.array(
         [

@@ -11,6 +11,8 @@ from .dataset.bdd import BDD
 from .dataset.coco import COCO
 from .dataset.pascal import PascalVOC
 from .dataset.kitti import KITTI
+from .dataset.noise_kitti import NoiseKITTI
+from .dataset.weather_kitti import WeatherKitti
 from .dataset.coco_hp import COCOHP
 
 
@@ -19,6 +21,8 @@ dataset_factory = {
   'coco': COCO,
   'pascal': PascalVOC,
   'kitti': KITTI,
+  'noise_kitti': NoiseKITTI,
+  'weather_kitti': WeatherKitti,
   'coco_hp': COCOHP
 }
 

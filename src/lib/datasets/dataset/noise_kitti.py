@@ -13,7 +13,7 @@ import math
 
 import torch.utils.data as data
 import tools.kitti_eval.tool.kitti_common as kitti
-from tools.kitti_eval.tool.eval_auroc import get_official_eval_result
+from tools.kitti_eval.tool.eval_auroc import get_official_eval_result, get_coco_eval_result
 from tools.unc_eval.utils import get_unc_files
 
 def _read_imageset_file(path):
@@ -21,16 +21,16 @@ def _read_imageset_file(path):
         lines = f.readlines()
     return [int(line) for line in lines]
 
-class KITTI(data.Dataset):
+class NoiseKITTI(data.Dataset):
   num_classes = 3
   default_resolution = [384, 1280]
   mean = np.array([0.485, 0.456, 0.406], np.float32).reshape(1, 1, 3)
   std = np.array([0.229, 0.224, 0.225], np.float32).reshape(1, 1, 3)
 
   def __init__(self, opt, split):
-    super(KITTI, self).__init__()
+    super(NoiseKITTI, self).__init__()
     self.data_dir = os.path.join(opt.data_dir, 'kitti')
-    self.img_dir = os.path.join(self.data_dir, 'images', 'trainval')
+    self.img_dir = os.path.join(self.data_dir, 'training', 'noise_image_2_0_100')
     if opt.trainval:
       split = 'trainval' if split == 'train' else 'test'
       self.img_dir = os.path.join(self.data_dir, 'images', split)

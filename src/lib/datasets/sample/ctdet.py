@@ -91,6 +91,7 @@ class CTDetDataset(data.Dataset):
     reg_mask = np.zeros((self.max_objs), dtype=np.uint8)
     cat_spec_wh = np.zeros((self.max_objs, num_classes * 2), dtype=np.float32)
     cat_spec_mask = np.zeros((self.max_objs, num_classes * 2), dtype=np.uint8)
+    cls = np.array([-1 for i in range(self.max_objs)])
     
     draw_gaussian = draw_msra_gaussian if self.opt.mse_loss else \
                     draw_umich_gaussian
@@ -116,6 +117,7 @@ class CTDetDataset(data.Dataset):
         ct = np.array(
           [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2], dtype=np.float32)
         ct_int = ct.astype(np.int32)
+        cls[k] = cls_id        
         draw_gaussian(hm[cls_id], ct_int, radius)
         wh[k] = 1. * w, 1. * h
         ind[k] = ct_int[1] * output_w + ct_int[0]
@@ -128,7 +130,7 @@ class CTDetDataset(data.Dataset):
         gt_det.append([ct[0] - w / 2, ct[1] - h / 2, 
                        ct[0] + w / 2, ct[1] + h / 2, 1, cls_id])
     
-    ret = {'input': inp, 'hm': hm, 'reg_mask': reg_mask, 'ind': ind, 'wh': wh}
+    ret = {'input': inp, 'hm': hm, 'reg_mask': reg_mask, 'ind': ind, 'wh': wh, 'cls': cls}
     if self.opt.dense_wh:
       hm_a = hm.max(axis=0, keepdims=True)
       dense_wh_mask = np.concatenate([hm_a, hm_a], axis=0)

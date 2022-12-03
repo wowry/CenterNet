@@ -13,6 +13,10 @@ from .networks.pose_dla_dcn import get_pose_net as get_dla_dcn
 from .networks.certainnet import get_certainnet
 from .networks.resnet_dcn import get_pose_net as get_pose_net_dcn
 from .networks.large_hourglass import get_large_hourglass_net
+from .networks.dla_dcn_ddu import get_dla_dcn_ddu as get_dla_dcn_ddu
+from .networks.dla_ddu import get_dla_ddu as get_dla_ddu
+from .networks.res_dcn_ddu import get_res_dcn_ddu as get_res_dcn_ddu
+from .networks.res_ddu import get_res_ddu as get_res_ddu
 
 _model_factory = {
   'res': get_pose_net, # default Resnet with deconv
@@ -21,13 +25,17 @@ _model_factory = {
   'certainnet': get_certainnet,
   'resdcn': get_pose_net_dcn,
   'hourglass': get_large_hourglass_net,
+  'dladdu': get_dla_ddu,
+  'dladcnddu': get_dla_dcn_ddu,
+  'resddu': get_res_ddu,
+  'resdcnddu': get_res_dcn_ddu,
 }
 
 def create_model(arch, heads, head_conv, opt):
   num_layers = int(arch[arch.find('_') + 1:]) if '_' in arch else 0
   arch = arch[:arch.find('_')] if '_' in arch else arch
   get_model = _model_factory[arch]
-  if 'certainnet' in arch:
+  if 'certainnet' in arch or 'ddu' in arch:
     model = get_model(num_layers=num_layers, heads=heads, head_conv=head_conv, opt=opt)
   else:
     model = get_model(num_layers=num_layers, heads=heads, head_conv=head_conv)

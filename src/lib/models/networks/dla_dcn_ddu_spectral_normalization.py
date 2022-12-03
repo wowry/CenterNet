@@ -12,11 +12,11 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import torch.utils.model_zoo as model_zoo
-import matplotlib.pyplot as plt
-from sklearn.manifold import TSNE
-from sklearn.decomposition import PCA
 
 from .DCNv2.dcn_v2 import DCN
+from .spectral_normalization.spectral_norm_conv_inplace import spectral_norm_conv
+from .spectral_normalization.spectral_norm_fc import spectral_norm_fc
+
 
 BN_MOMENTUM = 0.1
 logger = logging.getLogger(__name__)
@@ -30,29 +30,22 @@ def conv3x3(in_planes, out_planes, stride=1):
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
                      padding=1, bias=False)
 
-def conv1x1(in_planes, out_planes, stride=1):
-  """1x1 convolution"""
-  return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
-
 
 class BasicBlock(nn.Module):
-    def __init__(self, inplanes, planes, stride=1, dilation=1):
+    def __init__(self, input_size, wrapped_conv, inplanes, planes, stride=1, dilation=1):
         super(BasicBlock, self).__init__()
-        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=3,
-                               stride=stride, padding=dilation,
-                               bias=False, dilation=dilation)
+        self.conv1 = wrapped_conv(input_size, inplanes, planes, 3, stride, dilation, dilation, False)
         self.bn1 = nn.BatchNorm2d(planes, momentum=BN_MOMENTUM)
         self.relu = nn.ReLU(inplace=True)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3,
-                               stride=1, padding=dilation,
-                               bias=False, dilation=dilation)
+        input_h, input_w = input_size
+        self.conv2 = wrapped_conv((input_h // 2, input_w // 2) if inplanes != planes else input_size, planes, planes, 3, 1, dilation, dilation, False)
         self.bn2 = nn.BatchNorm2d(planes, momentum=BN_MOMENTUM)
         self.stride = stride
 
     def forward(self, x, residual=None):
         if residual is None:
             residual = x
-
+        
         out = self.conv1(x)
         out = self.bn1(out)
         out = self.relu(out)
@@ -152,11 +145,9 @@ class BottleneckX(nn.Module):
 
 
 class Root(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, residual):
+    def __init__(self, input_size, wrapped_conv, in_channels, out_channels, kernel_size, residual):
         super(Root, self).__init__()
-        self.conv = nn.Conv2d(
-            in_channels, out_channels, 1,
-            stride=1, bias=False, padding=(kernel_size - 1) // 2)
+        self.conv = wrapped_conv(input_size, in_channels, out_channels, 1, 1, (kernel_size - 1) // 2, bias=False)
         self.bn = nn.BatchNorm2d(out_channels, momentum=BN_MOMENTUM)
         self.relu = nn.ReLU(inplace=True)
         self.residual = residual
@@ -173,30 +164,31 @@ class Root(nn.Module):
 
 
 class Tree(nn.Module):
-    def __init__(self, levels, block, in_channels, out_channels, stride=1,
+    def __init__(self, input_size, wrapped_conv, levels, block, in_channels, out_channels, stride=1,
                  level_root=False, root_dim=0, root_kernel_size=1,
                  dilation=1, root_residual=False):
         super(Tree, self).__init__()
+        input_h, input_w = input_size
         if root_dim == 0:
             root_dim = 2 * out_channels
         if level_root:
             root_dim += in_channels
         if levels == 1:
-            self.tree1 = block(in_channels, out_channels, stride,
+            self.tree1 = block(input_size, wrapped_conv, in_channels, out_channels, stride,
                                dilation=dilation)
-            self.tree2 = block(out_channels, out_channels, 1,
+            self.tree2 = block((input_h // 2, input_w // 2) if stride > 1 else input_size, wrapped_conv, out_channels, out_channels, 1,
                                dilation=dilation)
         else:
-            self.tree1 = Tree(levels - 1, block, in_channels, out_channels,
+            self.tree1 = Tree(input_size, wrapped_conv, levels - 1, block, in_channels, out_channels,
                               stride, root_dim=0,
                               root_kernel_size=root_kernel_size,
                               dilation=dilation, root_residual=root_residual)
-            self.tree2 = Tree(levels - 1, block, out_channels, out_channels,
+            self.tree2 = Tree((input_h // 2, input_w // 2), wrapped_conv, levels - 1, block, out_channels, out_channels,
                               root_dim=root_dim + out_channels,
                               root_kernel_size=root_kernel_size,
                               dilation=dilation, root_residual=root_residual)
         if levels == 1:
-            self.root = Root(root_dim, out_channels, root_kernel_size,
+            self.root = Root((input_h // 2, input_w // 2), wrapped_conv, root_dim, out_channels, root_kernel_size,
                              root_residual)
         self.level_root = level_root
         self.root_dim = root_dim
@@ -207,8 +199,7 @@ class Tree(nn.Module):
             self.downsample = nn.MaxPool2d(stride, stride=stride)
         if in_channels != out_channels:
             self.project = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels,
-                          kernel_size=1, stride=1, bias=False),
+                wrapped_conv((input_h // 2, input_w // 2), in_channels, out_channels, 1, 1, bias=False),
                 nn.BatchNorm2d(out_channels, momentum=BN_MOMENTUM)
             )
 
@@ -229,28 +220,52 @@ class Tree(nn.Module):
 
 
 class DLA(nn.Module):
-    def __init__(self, levels, channels, num_classes=1000,
-                 block=BasicBlock, residual_root=False, linear_root=False):
+    def __init__(self, opt, levels, channels, num_classes=1000,
+                 block=BasicBlock, residual_root=False, linear_root=False,
+                 coeff=3, n_power_iterations=1):
         super(DLA, self).__init__()
+
+        def wrapped_conv(input_size, in_c, out_c, kernel_size, stride=1, padding=0, dilation=1, bias=True):
+            #padding = 1 if kernel_size == 3 else 0
+
+            conv = nn.Conv2d(in_c, out_c, kernel_size, stride, padding, dilation, bias=bias)
+
+            if not opt.spectral_normalization:
+                return conv
+
+            # NOTE: Google uses the spectral_norm_fc in all cases
+            if kernel_size == 1:
+                # use spectral norm fc, because bound are tight for 1x1 convolutions
+                wrapped_conv = spectral_norm_fc(conv, coeff, n_power_iterations)
+            else:
+                # Otherwise use spectral norm conv, with loose bound
+                shapes = (in_c, *input_size)
+                wrapped_conv = spectral_norm_conv(conv, coeff, shapes, n_power_iterations)
+
+            return wrapped_conv
+        
+        self.wrapped_conv = wrapped_conv
         self.channels = channels
         self.num_classes = num_classes
+        input_h, input_w = opt.input_h, opt.input_w
         self.base_layer = nn.Sequential(
-            nn.Conv2d(3, channels[0], kernel_size=7, stride=1,
-                      padding=3, bias=False),
+            wrapped_conv((input_h, input_w), 3, channels[0], 7, 1, 3, bias=False),
             nn.BatchNorm2d(channels[0], momentum=BN_MOMENTUM),
             nn.ReLU(inplace=True))
         self.level0 = self._make_conv_level(
+            (input_h, input_w),
             channels[0], channels[0], levels[0])
         self.level1 = self._make_conv_level(
+            (input_h, input_w),
             channels[0], channels[1], levels[1], stride=2)
-        self.level2 = Tree(levels[2], block, channels[1], channels[2], 2,
+        self.level2 = Tree((input_h // 2, input_w // 2), wrapped_conv, levels[2], block, channels[1], channels[2], 2,
                            level_root=False,
                            root_residual=residual_root)
-        self.level3 = Tree(levels[3], block, channels[2], channels[3], 2,
+        self.level3 = Tree((input_h // 4, input_w // 4), wrapped_conv, levels[3], block, channels[2], channels[3], 2,
                            level_root=True, root_residual=residual_root)
-        self.level4 = Tree(levels[4], block, channels[3], channels[4], 2,
+        self.level4 = Tree((input_h // 8, input_w // 8), wrapped_conv, levels[4], block, channels[3], channels[4], 2,
                            level_root=True, root_residual=residual_root)
-        self.level5 = Tree(levels[5], block, channels[4], channels[5], 2,
+        self.level5 = Tree((input_h // 16, input_w // 16), wrapped_conv, levels[5], block, channels[4], channels[5], 2,
                            level_root=True, root_residual=residual_root)
 
         # for m in self.modules():
@@ -278,13 +293,11 @@ class DLA(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def _make_conv_level(self, inplanes, planes, convs, stride=1, dilation=1):
+    def _make_conv_level(self, input_size, inplanes, planes, convs, stride=1, dilation=1):
         modules = []
         for i in range(convs):
             modules.extend([
-                nn.Conv2d(inplanes, planes, kernel_size=3,
-                          stride=stride if i == 0 else 1,
-                          padding=dilation, bias=False, dilation=dilation),
+                self.wrapped_conv(input_size, inplanes, planes, 3, stride if i == 0 else 1, dilation, dilation, False),
                 nn.BatchNorm2d(planes, momentum=BN_MOMENTUM),
                 nn.ReLU(inplace=True)])
             inplanes = planes
@@ -309,12 +322,13 @@ class DLA(nn.Module):
         self.fc = nn.Conv2d(
             self.channels[-1], num_classes,
             kernel_size=1, stride=1, padding=0, bias=True)
-        self.load_state_dict(model_weights)
+        self.load_state_dict(model_weights, strict=False)
         # self.fc = fc
 
 
-def dla34(pretrained=True, **kwargs):  # DLA-34
-    model = DLA([1, 1, 1, 2, 2, 1],
+def dla34(opt, pretrained=True, **kwargs):  # DLA-34
+    model = DLA(opt,
+                [1, 1, 1, 2, 2, 1],
                 [16, 32, 64, 128, 256, 512],
                 block=BasicBlock, **kwargs)
     if pretrained:
@@ -431,176 +445,14 @@ class Interpolate(nn.Module):
         return x
 
 
-class SimpleAttention(nn.Module):
-    '''
-    Attention の説明をするための、 Multi-head ではない単純な Attention です
-    '''
-
-    def __init__(self, depth: int, *args, **kwargs):
-        '''
-        コンストラクタです。
-        :param depth: 隠れ層及び出力の次元
-        '''
-        super().__init__(*args, **kwargs)
-        self.depth = depth
-
-        self.q_dense_layer = nn.Linear(64, depth, bias=False)
-        self.k_dense_layer = nn.Linear(64, depth, bias=False)
-        self.v_dense_layer = nn.Linear(64, depth, bias=False)
-        self.output_dense_layer = nn.Linear(64, depth, bias=False)
-
-    def call(self, input, memory):
-        '''
-        モデルの実行を行います。
-        :param input: query のテンソル
-        :param memory: query に情報を与える memory のテンソル
-        '''
-        q = self.q_dense_layer(input)  # [batch_size, q_length, depth]
-        k = self.k_dense_layer(memory)  # [batch_size, m_length, depth]
-        v = self.v_dense_layer(memory)
-
-        # ここで q と k の内積を取ることで、query と key の関連度のようなものを計算します。
-        logit = torch.matmul(q, k)  # [batch_size, q_length, k_length]
-
-        # softmax を取ることで正規化します
-        attention_weight = nn.functional.softmax(logit)
-
-        # 重みに従って value から情報を引いてきます
-        attention_output = torch.matmul(attention_weight, v)  # [batch_size, q_length, depth]
-        return self.output_dense_layer(attention_output)
-
-
-class MultiheadAttention(nn.Module):
-    '''
-    Multi-head Attention のモデルです。
-    model = MultiheadAttention(
-        hidden_dim=512,
-        head_num=8,
-        dropout_rate=0.1,
-    )
-    model(query, memory, mask, training=True)
-    '''
-
-    def __init__(self, hidden_dim: int, head_num: int, dropout_rate: float, *args, **kwargs):
-        '''
-        コンストラクタです。
-        :param hidden_dim: 隠れ層及び出力の次元
-            head_num の倍数である必要があります。
-        :param head_num: ヘッドの数
-        :param dropout_rate: ドロップアウトする確率
-        '''
-        super().__init__(*args, **kwargs)
-        self.hidden_dim = hidden_dim
-        self.head_num = head_num
-        self.dropout_rate = dropout_rate
-
-        self.q_dense_layer = nn.Linear(64, hidden_dim, bias=False)
-        self.k_dense_layer = nn.Linear(64, hidden_dim, bias=False)
-        self.v_dense_layer = nn.Linear(64, hidden_dim, bias=False)
-        self.output_dense_layer = nn.Linear(64, hidden_dim, bias=False)
-        self.attention_dropout_layer = nn.Dropout(dropout_rate)
-
-    def call(
-            self,
-            input,
-            memory,
-            attention_mask,
-            training: bool,
-    ):
-        '''
-        モデルの実行を行います。
-        :param input: query のテンソル
-        :param memory: query に情報を与える memory のテンソル
-        :param attention_mask: attention weight に適用される mask
-            shape = [batch_size, 1, q_length, k_length] のものです。
-            pad 等無視する部分が True となるようなものを指定してください。
-        :param training: 学習時か推論時かのフラグ
-        '''
-        q = self.q_dense_layer(input)  # [batch_size, q_length, hidden_dim]
-        k = self.k_dense_layer(memory)  # [batch_size, m_length, hidden_dim]
-        v = self.v_dense_layer(memory)
-
-        q = self._split_head(q)  # [batch_size, head_num, q_length, hidden_dim/head_num]
-        k = self._split_head(k)  # [batch_size, head_num, m_length, hidden_dim/head_num]
-        v = self._split_head(v)  # [batch_size, head_num, m_length, hidden_dim/head_num]
-
-        depth = self.hidden_dim // self.head_num
-        q *= depth ** -0.5  # for scaled dot production
-
-        # ここで q と k の内積を取ることで、query と key の関連度のようなものを計算します。
-        logit = nn.matmul(q, k)  # [batch_size, head_num, q_length, k_length]
-        logit += attention_mask.to(torch.float32) * torch.min(input)  # mask は pad 部分などが1, 他は0
-
-        # softmax を取ることで正規化します
-        attention_weight = nn.functional.softmax(logit)
-        attention_weight = self.attention_dropout_layer(attention_weight, training=training)
-
-        # 重みに従って value から情報を引いてきます
-        attention_output = nn.matmul(attention_weight, v)  # [batch_size, head_num, q_length, hidden_dim/head_num]
-        attention_output = self._combine_head(attention_output)  # [batch_size, q_length, hidden_dim]
-        return self.output_dense_layer(attention_output)
-
-    def _split_head(self, x):
-        '''
-        入力の tensor の hidden_dim の次元をいくつかのヘッドに分割します。
-        入力 shape: [batch_size, length, hidden_dim] の時
-        出力 shape: [batch_size, head_num, length, hidden_dim//head_num]
-        となります。
-        '''
-        batch_size, length, hidden_dim = x.size()
-        x = torch.reshape(x, (batch_size, length, self.head_num, self.hidden_dim // self.head_num))
-        return torch.permute(x, (0, 2, 1, 3))
-
-    def _combine_head(self, x):
-        '''
-        入力の tensor の各ヘッドを結合します。 _split_head の逆変換です。
-        入力 shape: [batch_size, head_num, length, hidden_dim//head_num] の時
-        出力 shape: [batch_size, length, hidden_dim]
-        となります。
-        '''
-        batch_size, _, length, _ = x.size()
-        x = torch.permute(x, (0, 2, 1, 3))
-        return torch.reshape(x, [batch_size, length, self.hidden_dim])
-
-class SelfAttention(MultiheadAttention):
-    def call(  # type: ignore
-            self,
-            input,
-            attention_mask,
-            training: bool,
-    ):
-        return super().call(
-            input=input,
-            memory=input,
-            attention_mask=attention_mask,
-            training=training,
-        )
-
-class ChannelAttention(nn.Module):
-    def __init__(self, in_planes, ratio=16):
-        super(ChannelAttention, self).__init__()
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.max_pool = nn.AdaptiveMaxPool2d(1)
-           
-        self.fc = nn.Sequential(nn.Conv2d(in_planes, in_planes // 16, 1, bias=False),
-                               nn.ReLU(),
-                               nn.Conv2d(in_planes // 16, in_planes, 1, bias=False))
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        avg_out = self.fc(self.avg_pool(x))
-        max_out = self.fc(self.max_pool(x))
-        out = avg_out + max_out
-        return self.sigmoid(out)
-
-class CertainNet(nn.Module):
+class DLASeg(nn.Module):
     def __init__(self, base_name, heads, pretrained, down_ratio, final_kernel,
                  last_level, head_conv, opt, out_channel=0):
-        super(CertainNet, self).__init__()
+        super(DLASeg, self).__init__()
         assert down_ratio in [2, 4, 8, 16]
         self.first_level = int(np.log2(down_ratio))
         self.last_level = last_level
-        self.base = globals()[base_name](pretrained=pretrained)
+        self.base = globals()[base_name](opt, pretrained=pretrained)
         channels = self.base.channels
         scales = [2 ** i for i in range(len(channels[self.first_level:]))]
         self.dla_up = DLAUp(self.first_level, channels[self.first_level:], scales)
@@ -636,134 +488,7 @@ class CertainNet(nn.Module):
                 fill_fc_weights(fc)
             self.__setattr__(head, fc)
         
-        #self.ca = ChannelAttention(64)
-        
-        self.ablation = opt.ablation
-        self.device = opt.device
-        self.centroid_size = opt.centroid_size
-        self.num_classes = opt.num_classes
-        self.gamma = opt.gamma
-        self.Lambda = opt.Lambda
-        self.length_scale = opt.length_scale
-        self.save_dir = opt.save_dir
-
-        self.register_buffer(
-            "e", torch.normal(torch.zeros(opt.centroid_size, opt.num_classes), 0.05)
-        )
-
-        for c in range(opt.num_classes):
-            self.__setattr__(f'conv1x1_{c}', conv1x1(channels[self.first_level], opt.centroid_size))
-            nn.init.kaiming_normal_(self.__getattr__(f'conv1x1_{c}').weight, nonlinearity="relu")
-    
-    def transform(self, y_pred):
-        y_mapped = []
-        for c in range(self.num_classes):
-            ym = self.__getattr__(f'conv1x1_{c}')(y_pred)
-            y_mapped.append(ym)
-        
-        y_mapped = torch.stack(y_mapped)
-        cat, batch, centroid_size, height, width = y_mapped.size()
-        y_mapped = y_mapped.permute(1, 3, 4, 2, 0).reshape(-1, centroid_size, cat)
-        
-        return y_mapped
-
-    def rbf(self, y_pred):
-        batch, _, height, width = y_pred.size()
-        y_mapped = self.transform(y_pred)
-
-        diff = y_mapped - self.e.unsqueeze(0)
-        diff = (diff ** 2).mean(1).div(2 * self.length_scale ** 2).mul(-1).exp()
-
-        diff = diff.reshape(batch, height, width, self.num_classes).permute(0, 3, 1, 2)
-
-        return diff, y_mapped
-    
-    def calc_Lreg(self, y, y_mapped):
-        Lambda = self.Lambda
-        sigma = self.length_scale
-
-        y = y.permute(1, 0, 2, 3).reshape(y.size()[1], -1)
-        y_mapped = y_mapped.permute(2, 0, 1)
-
-        prod_sum = 0
-        y_sum = 0
-        for c, (hm, hm_mapped) in enumerate(zip(y, y_mapped)):
-            ec = self.e[:, c]
-            
-            diff = hm_mapped - ec.unsqueeze(0)
-            diff_sum = torch.sum(diff ** 2, 1)
-
-            y_lambda = hm ** Lambda
-            prod = y_lambda * diff_sum
-
-            prod_sum += prod.sum()
-            y_sum += y_lambda.sum()
-        
-        denom = torch.clamp(y_sum, min=1) / (sigma ** 2)
-        reg_loss = prod_sum / denom
-        return reg_loss
-    
-    def get_hm_coord(self, x):
-        x = self.base(x)
-        x = self.dla_up(x)
-
-        y = []
-        for i in range(self.last_level - self.first_level):
-            y.append(x[i].clone())
-        self.ida_up(y, 0, len(y))
-
-        _, y_mapped = self.rbf(y[-1])
-
-        return y_mapped
-    
-    def update_embeddings(self, x, y):
-        sigma = self.length_scale
-        threshold = sigma * 3
-
-        y_mapped = self.get_hm_coord(x)
-
-        y_mapped = y_mapped.permute(2, 0, 1)
-        y = y.permute(1, 0, 2, 3).reshape(y.size()[1], -1)
-
-        for c, (hm, hm_mapped) in enumerate(zip(y, y_mapped)):
-            ec = self.e[:, c]
-
-            # remove outliers
-            if self.ablation >= 3:
-                diff = (hm_mapped - ec.unsqueeze(0)).norm(2, dim=1)
-                inliers = (diff <= threshold).nonzero().squeeze()
-                if inliers.numel() > 0:
-                    hm = torch.index_select(hm, 0, inliers)
-                    hm_mapped = torch.index_select(hm_mapped, 0, inliers)
-            
-            y_lambda = hm ** self.Lambda
-            prod = y_lambda.unsqueeze(1) * hm_mapped
-            
-            if y_lambda.sum(0) != 0:
-                self.e[:, c] = self.gamma * ec + ((1 - self.gamma) / y_lambda.sum(0)) * prod.sum(0)
-
-    def save_reduced_samples(self, x, colormap=plt.cm.Paired):
-        num_samples = 10
-
-        y_mapped = self.get_hm_coord(x)
-        y_mapped = y_mapped.permute(2, 0, 1).detach().cpu().numpy()
-
-        for c, hm in enumerate(y_mapped):
-            hm = hm[::int(hm.shape[0] / num_samples), :]
-
-            ## t-SNE
-            tsne = TSNE(n_components=2, random_state=1)
-            tsne_reduced = tsne.fit_transform(hm)
-
-            ## PCA
-            pca = PCA(n_components=2, random_state=1)
-            pca_reduced = pca.fit_transform(hm)
-
-            """ file_name = os.path.join(self.save_dir, f't-sne/{c}/message.txt')
-            with open(file_name, 'wt') as message_file:
-                message_file.write(opt.message)
-            print(f"\nsave_reduced_samples =======================")
-            print(tsne_reduced.shape, pca_reduced.shape) """
+        self.feature = None
 
     def forward(self, x):
         x = self.base(x)
@@ -774,17 +499,16 @@ class CertainNet(nn.Module):
             y.append(x[i].clone())
         self.ida_up(y, 0, len(y))
 
+        self.feature = y[-1].clone().detach()
+
         z = {}
         for head in self.heads:
-            if 'hm' in head:
-                z[head], y_mapped = self.rbf(y[-1])
-            else:
-                z[head] = self.__getattr__(head)(y[-1])
-        return [z], y_mapped
+            z[head] = self.__getattr__(head)(y[-1])
+        return [z]
     
 
-def get_certainnet(num_layers, heads, opt, head_conv=256, down_ratio=4):
-  model = CertainNet('dla{}'.format(num_layers), heads,
+def get_dla_ddu(num_layers, heads, opt, head_conv=256, down_ratio=4):
+  model = DLASeg('dla{}'.format(num_layers), heads,
                  pretrained=True,
                  down_ratio=down_ratio,
                  final_kernel=1,

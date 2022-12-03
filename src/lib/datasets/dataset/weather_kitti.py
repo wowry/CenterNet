@@ -21,16 +21,16 @@ def _read_imageset_file(path):
         lines = f.readlines()
     return [int(line) for line in lines]
 
-class KITTI(data.Dataset):
+class WeatherKitti(data.Dataset):
   num_classes = 3
   default_resolution = [384, 1280]
   mean = np.array([0.485, 0.456, 0.406], np.float32).reshape(1, 1, 3)
   std = np.array([0.229, 0.224, 0.225], np.float32).reshape(1, 1, 3)
 
   def __init__(self, opt, split):
-    super(KITTI, self).__init__()
+    super(WeatherKitti, self).__init__()
     self.data_dir = os.path.join(opt.data_dir, 'kitti')
-    self.img_dir = os.path.join(self.data_dir, 'images', 'trainval')
+    self.img_dir = os.path.join(self.data_dir, '../weather_kitti/data_object/training/image_2/rain', '100mm', 'rainy_image')
     if opt.trainval:
       split = 'trainval' if split == 'train' else 'test'
       self.img_dir = os.path.join(self.data_dir, 'images', split)
@@ -130,7 +130,7 @@ class KITTI(data.Dataset):
     if self.opt.unc_est:
       uncs = get_unc_files(self.uncs_dir)
     
-    result = get_official_eval_result(gt_annos, dt_annos, uncs, (0, 1, 2), self.opt, wandb)
+    result = get_official_eval_result(gt_annos, dt_annos, uncs, (0, 1, 2), self.opt.dataset, wandb)
 
     ap_file = os.path.join(save_dir, f'results_ap_{self.opt.dataset}.txt')
     with open(ap_file, "w") as f:

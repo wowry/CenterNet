@@ -156,6 +156,12 @@ class opts(object):
                              help='weight for hyperspace regularization.')
     self.parser.add_argument('--length_scale', type=float, default=2.5e-1,
                              help="length scale of RBF kernel.")
+    self.parser.add_argument('--unc_est', action='store_true',
+                             help='estimate objectness, location, dimensions and class uncertainties.')
+
+    # DDU
+    self.parser.add_argument('--spectral_normalization', action='store_true',
+                             help='spectral normalization for regularizing feature space.')
 
     # multi_pose
     self.parser.add_argument('--aug_rot', type=float, default=0, 

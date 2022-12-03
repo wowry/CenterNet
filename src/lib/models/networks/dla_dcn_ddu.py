@@ -12,9 +12,6 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import torch.utils.model_zoo as model_zoo
-import matplotlib.pyplot as plt
-from sklearn.manifold import TSNE
-from sklearn.decomposition import PCA
 
 from .DCNv2.dcn_v2 import DCN
 
@@ -29,10 +26,6 @@ def conv3x3(in_planes, out_planes, stride=1):
     "3x3 convolution with padding"
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
                      padding=1, bias=False)
-
-def conv1x1(in_planes, out_planes, stride=1):
-  """1x1 convolution"""
-  return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
 
 
 class BasicBlock(nn.Module):
@@ -431,172 +424,10 @@ class Interpolate(nn.Module):
         return x
 
 
-class SimpleAttention(nn.Module):
-    '''
-    Attention の説明をするための、 Multi-head ではない単純な Attention です
-    '''
-
-    def __init__(self, depth: int, *args, **kwargs):
-        '''
-        コンストラクタです。
-        :param depth: 隠れ層及び出力の次元
-        '''
-        super().__init__(*args, **kwargs)
-        self.depth = depth
-
-        self.q_dense_layer = nn.Linear(64, depth, bias=False)
-        self.k_dense_layer = nn.Linear(64, depth, bias=False)
-        self.v_dense_layer = nn.Linear(64, depth, bias=False)
-        self.output_dense_layer = nn.Linear(64, depth, bias=False)
-
-    def call(self, input, memory):
-        '''
-        モデルの実行を行います。
-        :param input: query のテンソル
-        :param memory: query に情報を与える memory のテンソル
-        '''
-        q = self.q_dense_layer(input)  # [batch_size, q_length, depth]
-        k = self.k_dense_layer(memory)  # [batch_size, m_length, depth]
-        v = self.v_dense_layer(memory)
-
-        # ここで q と k の内積を取ることで、query と key の関連度のようなものを計算します。
-        logit = torch.matmul(q, k)  # [batch_size, q_length, k_length]
-
-        # softmax を取ることで正規化します
-        attention_weight = nn.functional.softmax(logit)
-
-        # 重みに従って value から情報を引いてきます
-        attention_output = torch.matmul(attention_weight, v)  # [batch_size, q_length, depth]
-        return self.output_dense_layer(attention_output)
-
-
-class MultiheadAttention(nn.Module):
-    '''
-    Multi-head Attention のモデルです。
-    model = MultiheadAttention(
-        hidden_dim=512,
-        head_num=8,
-        dropout_rate=0.1,
-    )
-    model(query, memory, mask, training=True)
-    '''
-
-    def __init__(self, hidden_dim: int, head_num: int, dropout_rate: float, *args, **kwargs):
-        '''
-        コンストラクタです。
-        :param hidden_dim: 隠れ層及び出力の次元
-            head_num の倍数である必要があります。
-        :param head_num: ヘッドの数
-        :param dropout_rate: ドロップアウトする確率
-        '''
-        super().__init__(*args, **kwargs)
-        self.hidden_dim = hidden_dim
-        self.head_num = head_num
-        self.dropout_rate = dropout_rate
-
-        self.q_dense_layer = nn.Linear(64, hidden_dim, bias=False)
-        self.k_dense_layer = nn.Linear(64, hidden_dim, bias=False)
-        self.v_dense_layer = nn.Linear(64, hidden_dim, bias=False)
-        self.output_dense_layer = nn.Linear(64, hidden_dim, bias=False)
-        self.attention_dropout_layer = nn.Dropout(dropout_rate)
-
-    def call(
-            self,
-            input,
-            memory,
-            attention_mask,
-            training: bool,
-    ):
-        '''
-        モデルの実行を行います。
-        :param input: query のテンソル
-        :param memory: query に情報を与える memory のテンソル
-        :param attention_mask: attention weight に適用される mask
-            shape = [batch_size, 1, q_length, k_length] のものです。
-            pad 等無視する部分が True となるようなものを指定してください。
-        :param training: 学習時か推論時かのフラグ
-        '''
-        q = self.q_dense_layer(input)  # [batch_size, q_length, hidden_dim]
-        k = self.k_dense_layer(memory)  # [batch_size, m_length, hidden_dim]
-        v = self.v_dense_layer(memory)
-
-        q = self._split_head(q)  # [batch_size, head_num, q_length, hidden_dim/head_num]
-        k = self._split_head(k)  # [batch_size, head_num, m_length, hidden_dim/head_num]
-        v = self._split_head(v)  # [batch_size, head_num, m_length, hidden_dim/head_num]
-
-        depth = self.hidden_dim // self.head_num
-        q *= depth ** -0.5  # for scaled dot production
-
-        # ここで q と k の内積を取ることで、query と key の関連度のようなものを計算します。
-        logit = nn.matmul(q, k)  # [batch_size, head_num, q_length, k_length]
-        logit += attention_mask.to(torch.float32) * torch.min(input)  # mask は pad 部分などが1, 他は0
-
-        # softmax を取ることで正規化します
-        attention_weight = nn.functional.softmax(logit)
-        attention_weight = self.attention_dropout_layer(attention_weight, training=training)
-
-        # 重みに従って value から情報を引いてきます
-        attention_output = nn.matmul(attention_weight, v)  # [batch_size, head_num, q_length, hidden_dim/head_num]
-        attention_output = self._combine_head(attention_output)  # [batch_size, q_length, hidden_dim]
-        return self.output_dense_layer(attention_output)
-
-    def _split_head(self, x):
-        '''
-        入力の tensor の hidden_dim の次元をいくつかのヘッドに分割します。
-        入力 shape: [batch_size, length, hidden_dim] の時
-        出力 shape: [batch_size, head_num, length, hidden_dim//head_num]
-        となります。
-        '''
-        batch_size, length, hidden_dim = x.size()
-        x = torch.reshape(x, (batch_size, length, self.head_num, self.hidden_dim // self.head_num))
-        return torch.permute(x, (0, 2, 1, 3))
-
-    def _combine_head(self, x):
-        '''
-        入力の tensor の各ヘッドを結合します。 _split_head の逆変換です。
-        入力 shape: [batch_size, head_num, length, hidden_dim//head_num] の時
-        出力 shape: [batch_size, length, hidden_dim]
-        となります。
-        '''
-        batch_size, _, length, _ = x.size()
-        x = torch.permute(x, (0, 2, 1, 3))
-        return torch.reshape(x, [batch_size, length, self.hidden_dim])
-
-class SelfAttention(MultiheadAttention):
-    def call(  # type: ignore
-            self,
-            input,
-            attention_mask,
-            training: bool,
-    ):
-        return super().call(
-            input=input,
-            memory=input,
-            attention_mask=attention_mask,
-            training=training,
-        )
-
-class ChannelAttention(nn.Module):
-    def __init__(self, in_planes, ratio=16):
-        super(ChannelAttention, self).__init__()
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.max_pool = nn.AdaptiveMaxPool2d(1)
-           
-        self.fc = nn.Sequential(nn.Conv2d(in_planes, in_planes // 16, 1, bias=False),
-                               nn.ReLU(),
-                               nn.Conv2d(in_planes // 16, in_planes, 1, bias=False))
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        avg_out = self.fc(self.avg_pool(x))
-        max_out = self.fc(self.max_pool(x))
-        out = avg_out + max_out
-        return self.sigmoid(out)
-
-class CertainNet(nn.Module):
+class DLASeg(nn.Module):
     def __init__(self, base_name, heads, pretrained, down_ratio, final_kernel,
-                 last_level, head_conv, opt, out_channel=0):
-        super(CertainNet, self).__init__()
+                 last_level, head_conv, out_channel=0):
+        super(DLASeg, self).__init__()
         assert down_ratio in [2, 4, 8, 16]
         self.first_level = int(np.log2(down_ratio))
         self.last_level = last_level
@@ -636,134 +467,7 @@ class CertainNet(nn.Module):
                 fill_fc_weights(fc)
             self.__setattr__(head, fc)
         
-        #self.ca = ChannelAttention(64)
-        
-        self.ablation = opt.ablation
-        self.device = opt.device
-        self.centroid_size = opt.centroid_size
-        self.num_classes = opt.num_classes
-        self.gamma = opt.gamma
-        self.Lambda = opt.Lambda
-        self.length_scale = opt.length_scale
-        self.save_dir = opt.save_dir
-
-        self.register_buffer(
-            "e", torch.normal(torch.zeros(opt.centroid_size, opt.num_classes), 0.05)
-        )
-
-        for c in range(opt.num_classes):
-            self.__setattr__(f'conv1x1_{c}', conv1x1(channels[self.first_level], opt.centroid_size))
-            nn.init.kaiming_normal_(self.__getattr__(f'conv1x1_{c}').weight, nonlinearity="relu")
-    
-    def transform(self, y_pred):
-        y_mapped = []
-        for c in range(self.num_classes):
-            ym = self.__getattr__(f'conv1x1_{c}')(y_pred)
-            y_mapped.append(ym)
-        
-        y_mapped = torch.stack(y_mapped)
-        cat, batch, centroid_size, height, width = y_mapped.size()
-        y_mapped = y_mapped.permute(1, 3, 4, 2, 0).reshape(-1, centroid_size, cat)
-        
-        return y_mapped
-
-    def rbf(self, y_pred):
-        batch, _, height, width = y_pred.size()
-        y_mapped = self.transform(y_pred)
-
-        diff = y_mapped - self.e.unsqueeze(0)
-        diff = (diff ** 2).mean(1).div(2 * self.length_scale ** 2).mul(-1).exp()
-
-        diff = diff.reshape(batch, height, width, self.num_classes).permute(0, 3, 1, 2)
-
-        return diff, y_mapped
-    
-    def calc_Lreg(self, y, y_mapped):
-        Lambda = self.Lambda
-        sigma = self.length_scale
-
-        y = y.permute(1, 0, 2, 3).reshape(y.size()[1], -1)
-        y_mapped = y_mapped.permute(2, 0, 1)
-
-        prod_sum = 0
-        y_sum = 0
-        for c, (hm, hm_mapped) in enumerate(zip(y, y_mapped)):
-            ec = self.e[:, c]
-            
-            diff = hm_mapped - ec.unsqueeze(0)
-            diff_sum = torch.sum(diff ** 2, 1)
-
-            y_lambda = hm ** Lambda
-            prod = y_lambda * diff_sum
-
-            prod_sum += prod.sum()
-            y_sum += y_lambda.sum()
-        
-        denom = torch.clamp(y_sum, min=1) / (sigma ** 2)
-        reg_loss = prod_sum / denom
-        return reg_loss
-    
-    def get_hm_coord(self, x):
-        x = self.base(x)
-        x = self.dla_up(x)
-
-        y = []
-        for i in range(self.last_level - self.first_level):
-            y.append(x[i].clone())
-        self.ida_up(y, 0, len(y))
-
-        _, y_mapped = self.rbf(y[-1])
-
-        return y_mapped
-    
-    def update_embeddings(self, x, y):
-        sigma = self.length_scale
-        threshold = sigma * 3
-
-        y_mapped = self.get_hm_coord(x)
-
-        y_mapped = y_mapped.permute(2, 0, 1)
-        y = y.permute(1, 0, 2, 3).reshape(y.size()[1], -1)
-
-        for c, (hm, hm_mapped) in enumerate(zip(y, y_mapped)):
-            ec = self.e[:, c]
-
-            # remove outliers
-            if self.ablation >= 3:
-                diff = (hm_mapped - ec.unsqueeze(0)).norm(2, dim=1)
-                inliers = (diff <= threshold).nonzero().squeeze()
-                if inliers.numel() > 0:
-                    hm = torch.index_select(hm, 0, inliers)
-                    hm_mapped = torch.index_select(hm_mapped, 0, inliers)
-            
-            y_lambda = hm ** self.Lambda
-            prod = y_lambda.unsqueeze(1) * hm_mapped
-            
-            if y_lambda.sum(0) != 0:
-                self.e[:, c] = self.gamma * ec + ((1 - self.gamma) / y_lambda.sum(0)) * prod.sum(0)
-
-    def save_reduced_samples(self, x, colormap=plt.cm.Paired):
-        num_samples = 10
-
-        y_mapped = self.get_hm_coord(x)
-        y_mapped = y_mapped.permute(2, 0, 1).detach().cpu().numpy()
-
-        for c, hm in enumerate(y_mapped):
-            hm = hm[::int(hm.shape[0] / num_samples), :]
-
-            ## t-SNE
-            tsne = TSNE(n_components=2, random_state=1)
-            tsne_reduced = tsne.fit_transform(hm)
-
-            ## PCA
-            pca = PCA(n_components=2, random_state=1)
-            pca_reduced = pca.fit_transform(hm)
-
-            """ file_name = os.path.join(self.save_dir, f't-sne/{c}/message.txt')
-            with open(file_name, 'wt') as message_file:
-                message_file.write(opt.message)
-            print(f"\nsave_reduced_samples =======================")
-            print(tsne_reduced.shape, pca_reduced.shape) """
+        self.feature = None
 
     def forward(self, x):
         x = self.base(x)
@@ -774,22 +478,20 @@ class CertainNet(nn.Module):
             y.append(x[i].clone())
         self.ida_up(y, 0, len(y))
 
+        self.feature = y[-1].clone().detach()
+
         z = {}
         for head in self.heads:
-            if 'hm' in head:
-                z[head], y_mapped = self.rbf(y[-1])
-            else:
-                z[head] = self.__getattr__(head)(y[-1])
-        return [z], y_mapped
+            z[head] = self.__getattr__(head)(y[-1])
+        return [z]
     
 
-def get_certainnet(num_layers, heads, opt, head_conv=256, down_ratio=4):
-  model = CertainNet('dla{}'.format(num_layers), heads,
+def get_dla_dcn_ddu(num_layers, heads, opt, head_conv=256, down_ratio=4):
+  model = DLASeg('dla{}'.format(num_layers), heads,
                  pretrained=True,
                  down_ratio=down_ratio,
                  final_kernel=1,
                  last_level=5,
-                 head_conv=head_conv,
-                 opt=opt)
+                 head_conv=head_conv)
   return model
 

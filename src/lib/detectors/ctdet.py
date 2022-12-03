@@ -22,8 +22,8 @@ from utils.debugger import Debugger
 from .base_detector import BaseDetector
 
 class CtdetDetector(BaseDetector):
-  def __init__(self, opt):
-    super(CtdetDetector, self).__init__(opt)
+  def __init__(self, opt, wandb):
+    super(CtdetDetector, self).__init__(opt, wandb)
   
   def process(self, images, return_time=False):
     with torch.no_grad():
@@ -42,23 +42,26 @@ class CtdetDetector(BaseDetector):
         reg = reg[0:1] if reg is not None else None
       torch.cuda.synchronize()
       forward_time = time.time()
-      dets = ctdet_decode(hm, wh, reg=reg, cat_spec_wh=self.opt.cat_spec_wh, K=self.opt.K)
+      dets, inds, uncs = ctdet_decode(hm, wh, self.opt, reg=reg, cat_spec_wh=self.opt.cat_spec_wh, K=self.opt.K)
       
     if return_time:
-      return output, dets, forward_time
+      return output, dets, inds, uncs, forward_time
     else:
-      return output, dets
+      return output, dets, inds, uncs
 
-  def post_process(self, dets, meta, scale=1):
+  def post_process(self, dets, uncs, meta, scale=1):
     dets = dets.detach().cpu().numpy()
     dets = dets.reshape(1, -1, dets.shape[2])
+    if uncs is not None:
+      for key in uncs.keys():
+        uncs[key] = uncs[key].detach().cpu().numpy()
     dets = ctdet_post_process(
         dets.copy(), [meta['c']], [meta['s']],
         meta['out_height'], meta['out_width'], self.opt.num_classes)
     for j in range(1, self.num_classes + 1):
       dets[0][j] = np.array(dets[0][j], dtype=np.float32).reshape(-1, 5)
       dets[0][j][:, :4] /= scale
-    return dets[0]
+    return dets[0], uncs
 
   def merge_outputs(self, detections):
     results = {}
@@ -66,7 +69,7 @@ class CtdetDetector(BaseDetector):
       results[j] = np.concatenate(
         [detection[j] for detection in detections], axis=0).astype(np.float32)
       if len(self.scales) > 1 or self.opt.nms:
-         soft_nms(results[j], Nt=0.5, method=2)
+        soft_nms(results[j], Nt=0.5, method=2)
     scores = np.hstack(
       [results[j][:, 4] for j in range(1, self.num_classes + 1)])
     if len(scores) > self.max_per_image:

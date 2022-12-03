@@ -11,7 +11,8 @@ import os
 
 import torch.utils.data as data
 import tools.kitti_eval.tool.kitti_common as kitti
-from tools.kitti_eval.tool.eval import get_official_eval_result, get_coco_eval_result
+from tools.kitti_eval.tool.eval_auroc import get_official_eval_result
+from tools.unc_eval.utils import get_unc_files, eval_encs
 
 def _read_imageset_file(path):
     with open(path, 'r') as f:
@@ -29,11 +30,7 @@ class BDD(data.Dataset):
   def __init__(self, opt, split):
     super(BDD, self).__init__()
     self.data_dir = os.path.join(opt.data_dir, 'bdd100k')
-
-    if split == "test":
-      self.img_dir = os.path.join(self.data_dir, 'images/100k/test')
-    else:
-      self.img_dir = os.path.join(self.data_dir, 'images/100k/val')
+    self.img_dir = os.path.join(self.data_dir, f'images/100k/{split}')
 
     if split == 'test':
       self.annot_path = os.path.join(
@@ -52,7 +49,7 @@ class BDD(data.Dataset):
     self.class_name = [
       '__background__', 'pedestrian', 'car', 'rider']
     self.cat_ids = {
-      1: 0, 2: 2, 3: 1, 4: -99, 5: -99, 6: -99, 7: -99, 8: -99, 9: -99, 10: -99
+      1: 0, 2: 2, 3: 1, 4: -3, 5: -3, 6: -3, 7: -3, 8: -3, 9: -3, 10: -3
     }
     self.voc_color = [(v // 32 * 64 + 64, (v // 8) % 4 * 64, v % 8 * 32) \
                       for v in range(1, self.num_classes + 1)]
@@ -107,11 +104,11 @@ class BDD(data.Dataset):
   def __len__(self):
     return self.num_samples
 
-  def save_results(self, results):
-    if not os.path.exists(self.results_dir):
-      os.makedirs(self.results_dir)
+  def save_results(self, results_dir, results):
+    if not os.path.exists(results_dir):
+      os.makedirs(results_dir)
     for img_id in results.keys():
-      out_path = os.path.join(self.results_dir, '{:06d}.txt'.format(img_id))
+      out_path = os.path.join(results_dir, '{:06d}.txt'.format(img_id))
       f = open(out_path, 'w')
       for cls_ind in results[img_id]:
         for j in range(len(results[img_id][cls_ind])):
@@ -123,16 +120,26 @@ class BDD(data.Dataset):
           f.write('\n')
       f.close()
   
-  def run_eval(self, results, save_dir):
-    self.results_dir = os.path.join(save_dir, f'results/{self.opt.dataset}')
-    self.save_results(results)
+  def save_uncs(self, uncs_dir, image_uncs):
+    for img_id in image_uncs.keys():
+      uncs = image_uncs[img_id]
 
-    det_path = self.results_dir
-    dt_annos = kitti.get_label_annos(det_path)
-    gt_path = os.path.join(self.opt.data_dir, 'bdd100k/labels/labels')
-    gt_json_path = os.path.join(gt_path, '../val.json')
-    val_image_ids = list(range(1, self.num_samples + 1))
+      for key in uncs.keys():
+        unc = uncs[key]
+        unc_dir = os.path.join(uncs_dir, key)
 
+        if not os.path.exists(unc_dir):
+          os.makedirs(unc_dir)
+      
+        out_path = os.path.join(unc_dir, '{:06d}.txt'.format(img_id))
+        f = open(out_path, 'w')
+        for i in range(len(unc)):
+          for u in unc[i]:
+            f.write('{:.5f} '.format(u))
+          f.write('\n')
+        f.close()
+    
+  def convert_labels_to_kitti_format(self, gt_path, gt_json_path):
     if not os.path.exists(gt_path):
       print("Converting labels to kitti format...")
       os.mkdir(gt_path)
@@ -155,9 +162,33 @@ class BDD(data.Dataset):
             f.write(' {:.2f}'.format(bbox[i]))
           f.write(' 0.0 0.0 0.0 0.0 0.0 0.0 0.0')
           f.write('\n')
+  
+  def run_eval(self, results, uncs, save_dir, wandb):
+    results_dir = os.path.join(save_dir, f'results/{self.opt.dataset}/dets')
+    self.save_results(results_dir, results)
     
-    gt_annos = kitti.get_label_annos(gt_path, val_image_ids)
-    result = get_official_eval_result(gt_annos, dt_annos, (0, 1, 2), self.opt.dataset, save_dir)
+    uncs_dir = os.path.join(save_dir, f'results/{self.opt.dataset}/uncs')
+    self.save_uncs(uncs_dir, uncs)
+
+    det_path = results_dir
+    dt_annos = kitti.get_label_annos(det_path)
+
+    gt_path = os.path.join(self.opt.data_dir, 'bdd100k/labels/labels')
+    gt_json_path = os.path.join(gt_path, '../val.json')
+    val_image_ids = list(range(1, self.num_samples + 1))
+
+    self.convert_labels_to_kitti_format(gt_path, gt_json_path)
+    
+    id_label_info = {
+      'dataset': 'bdd',
+      'id_classes': (0, 1, 2)
+    }
+    gt_annos = kitti.get_label_annos(gt_path, val_image_ids, id_label_info)
+
+    if self.opt.unc_est:
+      uncs = get_unc_files(uncs_dir)
+    
+    result = get_official_eval_result(gt_annos, dt_annos, uncs, (0, 1, 2), self.opt.dataset, wandb)
 
     ap_file = os.path.join(save_dir, f'results_ap_{self.opt.dataset}.txt')
     with open(ap_file, "w") as f:

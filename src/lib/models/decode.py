@@ -461,22 +461,25 @@ def ddd_decode(heat, rot, depth, dim, wh=None, reg=None, K=40):
       
     return detections
 
-def ctdet_decode(heat, wh, reg=None, cat_spec_wh=False, K=100):
+def ctdet_decode(heat, wh, opt, reg=None, cat_spec_wh=False, K=100):
     batch, cat, height, width = heat.size()
+
+    heat_all = heat.clone()
+    wh_all = wh.clone()
 
     # heat = torch.sigmoid(heat)
     # perform nms on heatmaps
     heat = _nms(heat)
       
-    scores, inds, clses, ys, xs = _topk(heat, K=K)
+    scores, inds, clses, ys, xs = _topk(heat, K=K) # 1, 100
     if reg is not None:
       reg = _transpose_and_gather_feat(reg, inds)
       reg = reg.view(batch, K, 2)
-      xs = xs.view(batch, K, 1) + reg[:, :, 0:1]
-      ys = ys.view(batch, K, 1) + reg[:, :, 1:2]
+      xs_offset = xs.view(batch, K, 1) + reg[:, :, 0:1] # 1, 100, 1
+      ys_offset = ys.view(batch, K, 1) + reg[:, :, 1:2] # 1, 100, 1
     else:
-      xs = xs.view(batch, K, 1) + 0.5
-      ys = ys.view(batch, K, 1) + 0.5
+      xs_offset = xs.view(batch, K, 1) + 0.5
+      ys_offset = ys.view(batch, K, 1) + 0.5
     wh = _transpose_and_gather_feat(wh, inds)
     if cat_spec_wh:
       wh = wh.view(batch, K, cat, 2)
@@ -486,13 +489,135 @@ def ctdet_decode(heat, wh, reg=None, cat_spec_wh=False, K=100):
       wh = wh.view(batch, K, 2)
     clses  = clses.view(batch, K, 1).float()
     scores = scores.view(batch, K, 1)
-    bboxes = torch.cat([xs - wh[..., 0:1] / 2, 
-                        ys - wh[..., 1:2] / 2,
-                        xs + wh[..., 0:1] / 2, 
-                        ys + wh[..., 1:2] / 2], dim=2)
-    detections = torch.cat([bboxes, scores, clses], dim=2)
-      
-    return detections
+    half_width = wh[..., 0:1] / 2
+    half_height = wh[..., 1:2] / 2
+    bboxes_offset = torch.cat([xs_offset - half_width, 
+                               ys_offset - half_height,
+                               xs_offset + half_width, 
+                               ys_offset + half_height], dim=2) # 1, 100, 4
+    
+    detections = torch.cat([bboxes_offset, scores, clses], dim=2)
+
+    if not opt.unc_est:
+        return detections, inds, None
+    
+    '''
+    Uncertainty Estimation
+    '''
+    eta = opt.eta
+    device = opt.device
+
+    # Objectness Uncertainty
+    U_obj = (1 - heat_all).cpu() # 1, 100
+
+    x_l = xs - half_width.squeeze(2).to(torch.int32) # 1, 100
+    x_r = xs + half_width.squeeze(2).to(torch.int32) # 1, 100
+    y_t = ys - half_height.squeeze(2).to(torch.int32) # 1, 100
+    y_b = ys + half_height.squeeze(2).to(torch.int32) # 1, 100
+
+    # Location Uncertainty
+    U_x = torch.Tensor([-1 for i in range(batch * K)]) # 100
+    U_y = torch.Tensor([-1 for i in range(batch * K)]) # 100
+
+    # Dimensions Uncertainty
+    U_w = torch.Tensor([-1 for i in range(batch * K)]) # 100
+    U_h = torch.Tensor([-1 for i in range(batch * K)]) # 100
+
+    # Class Uncertainty
+    U_cls = torch.stack([torch.Tensor([0 for j in range(opt.num_classes)]) for i in range(batch * K)]) # 100
+
+    for b in range(batch):
+        for k in range(K):
+            x_min = x_l[b, k]
+            x_max = x_r[b, k]
+            y_min = y_t[b, k]
+            y_max = y_b[b, k]
+
+            w = wh[b, k, 0:1]
+            h = wh[b, k, 1:2]
+
+            if x_min >= x_max or y_min >= y_max:
+                U_x[b * K + k] = -1
+                U_y[b * K + k] = -1
+                U_w[b * K + k] = -1
+                U_h[b * K + k] = -1
+            else:
+                x = torch.arange(max(x_min, 0), min(x_max + 1, width), dtype=torch.int64).to(device)
+                y = torch.arange(max(y_min, 0), min(y_max + 1, height), dtype=torch.int64).to(device)
+
+                o_x = x.unsqueeze(0).repeat(y.size(0), 1)
+                o_x -= xs[b, k].long().item()
+                o_y = y.unsqueeze(1).repeat(1, x.size(0))
+                o_y -= ys[b, k].long().item()
+
+                hypo = torch.sqrt(o_x ** 2 + o_y ** 2)
+
+                cos = o_x / hypo
+                sin = o_y / hypo
+
+                hm = heat_all[b, clses[b, k, 0].long(), :, :]
+                hm = torch.gather(hm, 0, y.unsqueeze(1).repeat(1, width))
+                hm = torch.gather(hm, 1, x.unsqueeze(0).repeat(y.size(0), 1))
+
+                w_i = wh_all[b, 0, :, :]
+                w_i = torch.gather(w_i, 0, y.unsqueeze(1).repeat(1, width))
+                w_i = torch.gather(w_i, 1, x.unsqueeze(0).repeat(y.size(0), 1))
+
+                h_i = wh_all[b, 1, :, :]
+                h_i = torch.gather(h_i, 0, y.unsqueeze(1).repeat(1, width))
+                h_i = torch.gather(h_i, 1, x.unsqueeze(0).repeat(y.size(0), 1))
+
+                x_num = (o_x ** 2) * hm * (cos ** eta)
+                x_den = hm * (cos ** eta)
+
+                y_num = (o_y ** 2) * hm * (sin ** eta)
+                y_den = hm * (sin ** eta)
+
+                var_x = torch.nansum(x_num) / torch.nansum(x_den)
+                var_y = torch.nansum(y_num) / torch.nansum(y_den)
+            
+                U_x[b * K + k] = torch.sqrt(var_x) / w
+                U_y[b * K + k] = torch.sqrt(var_y) / h
+
+                w_num = hm * (w - w_i) ** 2
+                w_den = hm
+
+                h_num = hm * (h - h_i) ** 2
+                h_den = hm
+
+                U_w[b * K + k] = torch.sqrt(torch.nansum(w_num) / torch.nansum(w_den)) / w
+                U_h[b * K + k] = torch.sqrt(torch.nansum(h_num) / torch.nansum(h_den)) / h
+
+            u_cls = [0 for i in range(opt.num_classes)]
+            cp = heat_all[b, :, ys[b, k].long().item(), xs[b, k].long().item()]
+            cp_sorted, cp_idx = torch.sort(cp, dim=-1, descending=True)
+
+            prev_u = 0
+
+            for i, (idx, p) in enumerate(zip(cp_idx, cp_sorted)):
+                u = prev_u + (1 - prev_u) * (p / scores[b, k]) ** i
+                u_cls[idx] = u
+                prev_u = u
+            
+            U_cls[b * K + k] = torch.Tensor(u_cls)
+
+    U_x = U_x.reshape(batch, K, 1)
+    U_y = U_y.reshape(batch, K, 1)
+    U_w = U_w.reshape(batch, K, 1)
+    U_h = U_h.reshape(batch, K, 1)
+    U_cls = U_cls.reshape(batch, K, opt.num_classes)
+
+    U_loc = torch.cat([U_x, U_y], dim=2)
+    U_dim = torch.cat([U_w, U_h], dim=2)
+
+    uncertainties = {
+        'obj': U_obj,
+        'loc': U_loc,
+        'dim': U_dim,
+        'cls': U_cls
+    }
+
+    return detections, inds, uncertainties
 
 def multi_pose_decode(
     heat, wh, kps, reg=None, hm_hp=None, hp_offset=None, K=100):

@@ -84,6 +84,8 @@ for SPLIT in SPLITS:
       calib = read_clib(calib_path)
       image_info = {'file_name': '{}.png'.format(line),
                     'id': int(image_id),
+                    'width': W,
+                    'height': H,
                     'calib': calib.tolist()}
       ret['images'].append(image_info)
       if split == 'test':

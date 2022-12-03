@@ -9,9 +9,32 @@ import json
 import os
 
 import torch.utils.data as data
+import tools.kitti_eval.tool.kitti_common as kitti
+from tools.kitti_eval.tool.eval_auroc import get_official_eval_result
+
+coco_class_name = [
+     'person', 'bicycle', 'car', 'motorcycle', 'airplane',
+     'bus', 'train', 'truck', 'boat', 'traffic light', 'fire hydrant',
+     'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse',
+     'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack',
+     'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee', 'skis',
+     'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove',
+     'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass',
+     'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich',
+     'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake',
+     'chair', 'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv',
+     'laptop', 'mouse', 'remote', 'keyboard', 'cell phone', 'microwave',
+     'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase',
+     'scissors', 'teddy bear', 'hair drier', 'toothbrush'
+]
+
+def _read_imageset_file(path):
+  files = os.listdir(path)
+  filenames = [int(f.split('.')[0]) for f in files if os.path.isfile(os.path.join(path, f))]
+  return filenames
 
 class COCO(data.Dataset):
-  num_classes = 80
+  num_classes = 3 #80
   default_resolution = [512, 512]
   mean = np.array([0.40789654, 0.44719302, 0.47026115],
                    dtype=np.float32).reshape(1, 1, 3)
@@ -36,7 +59,7 @@ class COCO(data.Dataset):
           self.data_dir, 'annotations', 
           'instances_{}2017.json').format(split)
     self.max_objs = 128
-    self.class_name = [
+    """ self.class_name = [
       '__background__', 'person', 'bicycle', 'car', 'motorcycle', 'airplane',
       'bus', 'train', 'truck', 'boat', 'traffic light', 'fire hydrant',
       'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse',
@@ -49,9 +72,11 @@ class COCO(data.Dataset):
       'chair', 'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv',
       'laptop', 'mouse', 'remote', 'keyboard', 'cell phone', 'microwave',
       'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase',
-      'scissors', 'teddy bear', 'hair drier', 'toothbrush']
+      'scissors', 'teddy bear', 'hair drier', 'toothbrush'] """
+    self.class_name = [
+      '__background__', 'person', 'car', 'bicycle']
     self._valid_ids = [
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 
+      4, 5, 6, 7, 8, 9, 10, 11, 13, 
       14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 
       24, 25, 27, 28, 31, 32, 33, 34, 35, 36, 
       37, 38, 39, 40, 41, 42, 43, 44, 46, 47, 
@@ -60,6 +85,11 @@ class COCO(data.Dataset):
       72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 
       82, 84, 85, 86, 87, 88, 89, 90]
     self.cat_ids = {v: i for i, v in enumerate(self._valid_ids)}
+
+    self.cat_ids = {1: 0, 2: 2, 3: 1}
+    for v in self._valid_ids:
+      self.cat_ids[v] = -99
+    
     self.voc_color = [(v // 32 * 64 + 64, (v // 8) % 4 * 64, v % 8 * 32) \
                       for v in range(1, self.num_classes + 1)]
     self._data_rng = np.random.RandomState(123)
@@ -117,13 +147,73 @@ class COCO(data.Dataset):
     json.dump(self.convert_eval_format(results), 
                 open('{}/results.json'.format(save_dir), 'w'))
   
-  def run_eval(self, results, save_dir):
+  def save_results(self, results):
+    if not os.path.exists(self.results_dir):
+      os.makedirs(self.results_dir)
+    for img_id in results.keys():
+      out_path = os.path.join(self.results_dir, '{:06d}.txt'.format(img_id))
+      f = open(out_path, 'w')
+      for cls_ind in results[img_id]:
+        for j in range(len(results[img_id][cls_ind])):
+          class_name = self.class_name[cls_ind]
+          f.write('{} 0.0 0 -10'.format(class_name))
+          for i in range(len(results[img_id][cls_ind][j])-1):
+            f.write(' {:.2f}'.format(results[img_id][cls_ind][j][i]))
+          f.write(' 0.0 0.0 0.0 0.0 0.0 0.0 0.0 {:.2f}'.format(results[img_id][cls_ind][j][i+1]))
+          f.write('\n')
+      f.close()
+  
+  def convert_labels_to_kitti_format(self, gt_path, gt_json_path):
+    if not os.path.exists(gt_path):
+      print("Converting labels to kitti format...")
+      os.mkdir(gt_path)
+
+      with open(gt_json_path, 'r') as f:
+        gt_file = json.load(f)
+      gt_cat_names = {c['id']: c['name'] for c in gt_file['categories']}
+      gt_raw_annos = gt_file['annotations']
+
+      for gt_ann in gt_raw_annos:
+        img_id = gt_ann['image_id']
+        out_path = os.path.join(gt_path, '{:06d}.txt'.format(img_id))
+        with open(out_path, "a") as f:
+          class_name = gt_cat_names[gt_ann['category_id']].replace(' ', '')
+          f.write('{} 0.0 0 -10'.format(class_name))
+          bbox = gt_ann['bbox']
+          bbox[2] += bbox[0]
+          bbox[3] += bbox[1]
+          for i in range(len(bbox)):
+            f.write(' {:.2f}'.format(bbox[i]))
+          f.write(' 0.0 0.0 0.0 0.0 0.0 0.0 0.0')
+          f.write('\n')
+  
+  def run_eval(self, results, uncs, save_dir, wandb):
     # result_json = os.path.join(save_dir, "results.json")
     # detections  = self.convert_eval_format(results)
     # json.dump(detections, open(result_json, "w"))
-    self.save_results(results, save_dir)
+    """ self.save_results(results, save_dir)
     coco_dets = self.coco.loadRes('{}/results.json'.format(save_dir))
     coco_eval = COCOeval(self.coco, coco_dets, "bbox")
     coco_eval.evaluate()
     coco_eval.accumulate()
-    coco_eval.summarize()
+    coco_eval.summarize() """
+    self.results_dir = os.path.join(save_dir, f'results/{self.opt.dataset}/dets')
+    self.save_results(results)
+    
+    det_path = self.results_dir
+    dt_annos = kitti.get_label_annos(det_path)
+
+    gt_path = os.path.join(self.opt.data_dir, 'coco/annotations/labels')
+
+    self.convert_labels_to_kitti_format(gt_path, self.annot_path)
+    
+    val_image_names = _read_imageset_file(self.results_dir)
+
+    gt_annos = kitti.get_label_annos(gt_path, val_image_names)
+    
+    result = get_official_eval_result(gt_annos, dt_annos, uncs, list(range(3, len(coco_class_name))), self.opt, wandb)
+
+    """ ap_file = os.path.join(save_dir, f'results_ap_{self.opt.dataset}.txt')
+    with open(ap_file, "w") as f:
+      f.write(result) """
+    print(result)
