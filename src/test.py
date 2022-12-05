@@ -87,7 +87,7 @@ def prefetch_test(opt):
     gaussians_model_path = os.path.join(gmm_folderpath, 'gaussians_model.pt')
     train_densities_path = os.path.join(gmm_folderpath, 'train_densities.pt')
 
-    """ if opt.dataset == 'kitti':
+    if opt.dataset == 'kitti':
       embeddings, labels = get_embeddings(
           detector.model,
           train_loader,
@@ -99,12 +99,12 @@ def prefetch_test(opt):
       gaussians_model, jitter_eps = gmm_fit(embeddings=embeddings, labels=labels, num_classes=3)
       torch.save(gaussians_model, gaussians_model_path)
     
-      train_log_probs_B_Y = gmm_evaluate(detector.model, gaussians_model, train_loader, opt.output_w, opt.num_classes, opt.device)
+      train_log_probs_B_Y, _ = gmm_evaluate(detector.model, gaussians_model, train_loader, opt.output_w, opt.output_h, opt.num_classes, opt.device)
       train_densities = torch.logsumexp(train_log_probs_B_Y, dim=-1)
       torch.save(train_densities, train_densities_path)
-    else: """
-    gaussians_model = torch.load(gaussians_model_path)
-    train_densities = torch.load(train_densities_path)
+    else:
+      gaussians_model = torch.load(gaussians_model_path)
+      train_densities = torch.load(train_densities_path)
     
     train_min_density = train_densities.min().item()
     
@@ -117,6 +117,7 @@ def prefetch_test(opt):
   results = {}
   logits = torch.empty(0, device=opt.device)
   densities = torch.empty(0, device=opt.device)
+  densities_bg = torch.empty(0, device=opt.device)
   epistemic_uncertainties = []
   aleatoric_uncertainties = []
   entropies = torch.empty(0, device=opt.device)
@@ -127,15 +128,16 @@ def prefetch_test(opt):
   for ind, ((img_id, pre_processed_images), gt) in enumerate(zip(data_loader, val_loader)):
     id = img_id.numpy().astype(np.int32)[0]
     if 'ddu' in opt.arch:
-      ret = detector.run(pre_processed_images, gmm_dict=gmm_dict)
+      ret = detector.run(pre_processed_images, gmm_dict=gmm_dict, batch=gt)
       gmm_results = ret['gmm_results']
       if 'kitti' in opt.dataset \
-        or ('kitti' not in opt.dataset and (False not in (gt['cls'] < 0))):
+        or ('kitti' not in opt.dataset and (False not in (gt['cls'] == -1))):
         results[id] = ret['results']
         logits = torch.cat((logits, gmm_results['logits']))
 
         if gmm_results['density'] is not None:
           densities = torch.cat((densities, gmm_results['density']))
+          densities_bg = torch.cat((densities_bg, gmm_results['density_bg']))
         entropies = torch.cat((entropies, gmm_results['entropy']))
         epistemic_uncertainties.append(gmm_results['density'])
         aleatoric_uncertainties.append(gmm_results['entropy'])
@@ -170,7 +172,7 @@ def prefetch_test(opt):
     bar.next()
   bar.finish()
 
-  #print("FPS:", 1 / avg_time_stats['tot'].avg)
+  print("FPS:", 1 / avg_time_stats['tot'].avg)
 
   if 'ddu' in opt.arch:
     #epistemic_uncertainties = torch.stack(epistemic_uncertainties)
@@ -178,10 +180,11 @@ def prefetch_test(opt):
     #print(epistemic_uncertainties.size(), aleatoric_uncertainties.size())
     torch.save(logits, os.path.join(gmm_folderpath, f'logits_{opt.arch}_{opt.dataset}.pt'))
     torch.save(densities, os.path.join(gmm_folderpath, f'densities_{opt.arch}_{opt.dataset}.pt'))
+    torch.save(densities_bg, os.path.join(gmm_folderpath, f'densities_bg_{opt.arch}_{opt.dataset}.pt'))
     torch.save(epistemic_uncertainties, os.path.join(gmm_folderpath, f'epistemic_uncertainties_{opt.arch}_{opt.dataset}.pt'))
     torch.save(aleatoric_uncertainties, os.path.join(gmm_folderpath, f'aleatoric_uncertainties_{opt.arch}_{opt.dataset}.pt'))
     torch.save(entropies, os.path.join(gmm_folderpath, f'entropies_{opt.arch}_{opt.dataset}.pt'))
-  dataset.run_eval(results, uncs, opt.save_dir, wandb)
+  #dataset.run_eval(results, uncs, opt.save_dir, wandb)
 
 def test(opt):
   os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpus_str

@@ -132,7 +132,7 @@ class KITTI(data.Dataset):
     
     result = get_official_eval_result(gt_annos, dt_annos, uncs, (0, 1, 2), self.opt, wandb)
 
-    ap_file = os.path.join(save_dir, f'results_ap_{self.opt.dataset}.txt')
+    """ ap_file = os.path.join(save_dir, f'results_ap_{self.opt.dataset}.txt')
     with open(ap_file, "w") as f:
       f.write(result)
-    print(result)
+    print(result) """

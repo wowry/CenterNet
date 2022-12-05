@@ -81,7 +81,7 @@ class BaseDetector(object):
   def show_results(self, debugger, image, results):
    raise NotImplementedError
 
-  def run(self, image_or_path_or_tensor, gmm_dict=None, meta=None):
+  def run(self, image_or_path_or_tensor, gmm_dict=None, batch=None, meta=None):
     load_time, pre_time, net_time, dec_time, post_time = 0, 0, 0, 0, 0
     merge_time, tot_time = 0, 0
     debugger = Debugger(dataset=self.opt.dataset, ipynb=(self.opt.debug==3),
@@ -146,22 +146,40 @@ class BaseDetector(object):
     
     gmm_results = {}
     if gmm_dict is not None:
+      device = opt.device
+      output_w = opt.output_w
       gaussians_model = gmm_dict['gaussians_model']
       train_min_density = gmm_dict['train_min_density']
-      log_probs_B_Y = gmm_forward(self.model, gaussians_model, indices[0], opt.output_w, opt.num_classes, opt.device, opt.flip_test)
+      hm = batch['all_classes_hm'].to(device)
+      ind = batch['ind'][0].to(device)
+      cls = batch['cls'][0].to(device)
+
+      hm = torch.sum(hm[0, :, :, :], dim=0)
+      inds_bg_r, inds_bg_c = torch.where(hm == 0)
+      inds_bg = inds_bg_r * output_w + inds_bg_c
+
+      if opt.dataset == 'kitti':
+        valid_ind = torch.where(cls != -1) # known classes
+      else:
+        valid_ind = torch.where(cls == -1) # unknown classes
+      ind = ind[valid_ind]
+      cls = cls[valid_ind]
+      log_probs_B_Y, log_prob_bg = gmm_forward(self.model, gaussians_model, ind, inds_bg, opt.output_w, opt.num_classes, opt.device, opt.flip_test)
       if log_probs_B_Y is not None:
         density = uncertainty_confidence.logsumexp(log_probs_B_Y)
+        density_bg = uncertainty_confidence.logsumexp(log_prob_bg)
         uncertainty = density - train_min_density
       else:
         density, uncertainty = None, None
       torch.cuda.synchronize()
 
       gmm_results['density'] = density
+      gmm_results['density_bg'] = density_bg
       gmm_results['e_uncertainty'] = uncertainty
 
       all_hm = output['hm'] # 1, 3, 96, 320
-      r = torch.div(indices[0], opt.output_w, rounding_mode='floor')
-      c = indices[0] % opt.output_w
+      r = torch.div(ind, opt.output_w, rounding_mode='floor')
+      c = ind % opt.output_w
       logits = all_hm[0, :, r, c].permute(1, 0) # 100, 3
       entropy = uncertainty_confidence.entropy(logits)
       torch.cuda.synchronize()

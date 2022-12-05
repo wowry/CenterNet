@@ -84,7 +84,7 @@ class COCO(data.Dataset):
       58, 59, 60, 61, 62, 63, 64, 65, 67, 70, 
       72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 
       82, 84, 85, 86, 87, 88, 89, 90]
-    self.cat_ids = {v: i for i, v in enumerate(self._valid_ids)}
+    #self.cat_ids = {v: i for i, v in enumerate(self._valid_ids)}
 
     self.cat_ids = {1: 0, 2: 2, 3: 1}
     for v in self._valid_ids:

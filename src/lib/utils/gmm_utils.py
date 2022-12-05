@@ -1,3 +1,4 @@
+import math
 import torch
 from torch import nn
 from tqdm import tqdm
@@ -43,7 +44,7 @@ def get_embeddings(
 
             feature = out[0, :, r, c].permute(1, 0) # 64, N
 
-            embeddings = torch.cat((embeddings, feature), dim=0)
+            embeddings = torch.cat((embeddings, feature), dim=0).double()
             labels = torch.cat((labels, cls), dim=0)
     
     print(embeddings.size())
@@ -52,8 +53,8 @@ def get_embeddings(
     return embeddings, labels
 
 
-def gmm_forward(net, gaussians_model, ind, output_w, num_classes, device, flip_test=False):
-    log_probs_B_Y = None
+def gmm_forward(net, gaussians_model, ind, inds_bg, output_w, num_classes, device, flip_test=False):
+    log_probs_B_Y, log_prob_bg = None, None
 
     if isinstance(net, nn.DataParallel):
         out = net.module.feature
@@ -63,23 +64,46 @@ def gmm_forward(net, gaussians_model, ind, output_w, num_classes, device, flip_t
     r = torch.div(ind, output_w, rounding_mode='floor')
     c = ind % output_w
 
+    r_bg = torch.div(inds_bg, output_w, rounding_mode='floor')
+    c_bg = inds_bg % output_w
+
     features_B_Z = out[0, :, r, c].permute(1, 0) # 64, N
     #features_B_Z = out[0, :, :, :].reshape(out.size()[1], -1).permute(1, 0) # 64, N
 
+    features_bg = out[0, :, r_bg, c_bg].permute(1, 0) # 64, N
+
     if features_B_Z.size()[0] > 0:
-        log_probs_B_Y = gaussians_model.log_prob(features_B_Z[:, None, :]) # N, 3
+        log_probs_B_Y = gaussians_model.log_prob(features_B_Z[:, None, :].double()) # N, 3
+        log_prob_bg = gaussians_model.log_prob(features_bg[:, None, :].double()) # N, 3
 
-    return log_probs_B_Y
+    return log_probs_B_Y, log_prob_bg
 
 
-def gmm_evaluate(net, gaussians_model, loader, output_w, num_classes, device):
+def gmm_evaluate(net, gaussians_model, loader, output_w, output_h, num_classes, device):
     logits_N_C = torch.empty(0, device=device)
+    logits_bg = torch.empty(0, device=device)
 
     with torch.no_grad():
         for batch in tqdm(loader):
             data = batch['input'].to(device)
+            hm = batch['hm'].to(device) # 1, 3, 96, 320
             ind = batch['ind'][0].to(device)
             cls = batch['cls'][0].to(device)
+
+            hm = torch.sum(hm[0, :, :, :], dim=0)
+            inds_bg_r, inds_bg_c = torch.where(hm == 0)
+            inds_bg = inds_bg_r * output_w + inds_bg_c
+
+            """ all_inds = torch.arange(0, output_w * output_h, device=device).reshape(output_h, output_w)
+            obj_inds = torch.empty(0, device=device)
+            for i, idx in enumerate(ind):
+                width, height = wh[i]
+                left, right = (idx - (width / 2)) % output_w, (idx + (width / 2)) % output_w
+                top, bottom = (idx - (height / 2) * output_w) // output_w, (idx + (height / 2) * output_w) // output_w
+                target_r, target_c = torch.where((all_inds % output_w >= left) & (all_inds % output_w <= right) & (all_inds // output_w >= top) & (all_inds // output_w <= bottom))
+                target_inds = target_r * output_w + target_c
+                obj_inds = torch.cat((obj_inds, target_inds), dim=0)
+            bg_inds = torch.tensor([i for i in all_inds.reshape(-1) if i not in obj_inds], device=device) """
 
             valid_ind = torch.where(cls != -1)
             ind = ind[valid_ind]
@@ -92,12 +116,13 @@ def gmm_evaluate(net, gaussians_model, loader, output_w, num_classes, device):
             else:
                 out = net(data)
             
-            logit_B_C = gmm_forward(net, gaussians_model, ind, output_w, num_classes, device)
+            logit_B_C, log_prob_bg = gmm_forward(net, gaussians_model, ind, inds_bg, output_w, num_classes, device)
 
             if logit_B_C is not None:
                 logits_N_C = torch.cat((logits_N_C, logit_B_C), dim=0)
+                logits_bg = torch.cat((logits_bg, log_prob_bg), dim=0)
 
-    return logits_N_C
+    return logits_N_C, logits_bg
 
 
 def gmm_get_logits(gmm, embeddings):
@@ -122,7 +147,6 @@ def gmm_fit(embeddings, labels, num_classes):
                 gmm = torch.distributions.MultivariateNormal(
                     loc=classwise_mean_features, covariance_matrix=(classwise_cov_features + jitter),
                 )
-                print(gmm)
             except:
                 continue
             break
