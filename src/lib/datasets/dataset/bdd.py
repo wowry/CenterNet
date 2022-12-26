@@ -11,7 +11,7 @@ import os
 
 import torch.utils.data as data
 import tools.kitti_eval.tool.kitti_common as kitti
-from tools.kitti_eval.tool.eval_auroc import get_official_eval_result
+from tools.kitti_eval.tool.eval2 import get_official_eval_result
 from tools.unc_eval.utils import get_unc_files, eval_encs
 
 def _read_imageset_file(path):
@@ -69,7 +69,10 @@ class BDD(data.Dataset):
 
     print('==> initializing BDD {} data.'.format(split))
     self.coco = coco.COCO(self.annot_path)
-    self.images = self.coco.getImgIds()
+    if split == 'train':
+      self.images = self.coco.getImgIds()[:5000]
+    else:
+      self.images = self.coco.getImgIds()
     self.num_samples = len(self.images)
 
     print('Loaded {} {} samples'.format(split, self.num_samples))
@@ -183,14 +186,14 @@ class BDD(data.Dataset):
       'dataset': 'bdd',
       'id_classes': (0, 1, 2)
     }
-    gt_annos = kitti.get_label_annos(gt_path, val_image_ids, id_label_info)
+    gt_annos = kitti.get_label_annos(gt_path, val_image_ids)
 
     if self.opt.unc_est:
       uncs = get_unc_files(uncs_dir)
     
-    result = get_official_eval_result(gt_annos, dt_annos, uncs, (0, 1, 2), self.opt.dataset, wandb)
+    result = get_official_eval_result(gt_annos, dt_annos, uncs, (0, 1, 2, 3, 4, 5, 6, 7, 8, 9), self.opt, wandb, difficulties=[2])
 
-    ap_file = os.path.join(save_dir, f'results_ap_{self.opt.dataset}.txt')
+    """ ap_file = os.path.join(save_dir, f'results_ap_{self.opt.dataset}.txt')
     with open(ap_file, "w") as f:
       f.write(result)
-    print(result)
+    print(result) """

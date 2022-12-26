@@ -10,7 +10,7 @@ DATA_PATH = '../../data/kitti/'
 DEBUG = False
 # VAL_PATH = DATA_PATH + 'training/label_val/'
 import os
-SPLITS = ['3dop', 'subcnn'] 
+SPLITS = ['3dop']#, 'subcnn'] 
 import _init_paths
 from utils.ddd_utils import compute_box_3d, project_to_image, alpha2rot_y
 from utils.ddd_utils import draw_box_3d, unproject_2d_to_3d
@@ -67,10 +67,10 @@ for SPLIT in SPLITS:
   image_set_path = DATA_PATH + 'ImageSets_{}/'.format(SPLIT)
   ann_dir = DATA_PATH + 'training/label_2/'
   calib_dir = DATA_PATH + '{}/calib/'
-  splits = ['train', 'val']
+  splits = ['train', 'val', 'test']
   # splits = ['trainval', 'test']
   calib_type = {'train': 'training', 'val': 'training', 'trainval': 'training',
-                'test': 'testing'}
+                'test': 'training'}
 
   for split in splits:
     ret = {'images': [], 'annotations': [], "categories": cat_info}
@@ -88,8 +88,8 @@ for SPLIT in SPLITS:
                     'height': H,
                     'calib': calib.tolist()}
       ret['images'].append(image_info)
-      if split == 'test':
-        continue
+      """ if split == 'test':
+        continue """
       ann_path = ann_dir + '{}.txt'.format(line)
       # if split == 'val':
       #   os.system('cp {} {}/'.format(ann_path, VAL_PATH))

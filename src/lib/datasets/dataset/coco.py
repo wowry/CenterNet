@@ -10,7 +10,7 @@ import os
 
 import torch.utils.data as data
 import tools.kitti_eval.tool.kitti_common as kitti
-from tools.kitti_eval.tool.eval_auroc import get_official_eval_result
+from tools.kitti_eval.tool.eval_auroc2 import get_official_eval_result
 
 coco_class_name = [
      'person', 'bicycle', 'car', 'motorcycle', 'airplane',
@@ -211,7 +211,7 @@ class COCO(data.Dataset):
 
     gt_annos = kitti.get_label_annos(gt_path, val_image_names)
     
-    result = get_official_eval_result(gt_annos, dt_annos, uncs, list(range(3, len(coco_class_name))), self.opt, wandb)
+    result = get_official_eval_result(gt_annos, dt_annos, uncs, list(range(3, len(coco_class_name))), self.opt, wandb, difficulties=[2])
 
     """ ap_file = os.path.join(save_dir, f'results_ap_{self.opt.dataset}.txt')
     with open(ap_file, "w") as f:

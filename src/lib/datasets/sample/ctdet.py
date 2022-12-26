@@ -84,7 +84,7 @@ class CTDetDataset(data.Dataset):
     trans_output = get_affine_transform(c, s, 0, [output_w, output_h])
 
     hm = np.zeros((num_classes, output_h, output_w), dtype=np.float32)
-    all_classes_hm = np.zeros((90, output_h, output_w), dtype=np.float32)
+    all_classes_hm = np.zeros((91, output_h, output_w), dtype=np.float32)
     wh = np.zeros((self.max_objs, 2), dtype=np.float32)
     dense_wh = np.zeros((2, output_h, output_w), dtype=np.float32)
     reg = np.zeros((self.max_objs, 2), dtype=np.float32)

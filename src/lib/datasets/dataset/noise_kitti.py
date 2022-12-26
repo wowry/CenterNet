@@ -13,7 +13,7 @@ import math
 
 import torch.utils.data as data
 import tools.kitti_eval.tool.kitti_common as kitti
-from tools.kitti_eval.tool.eval_auroc import get_official_eval_result, get_coco_eval_result
+from tools.kitti_eval.tool.eval2 import get_official_eval_result
 from tools.unc_eval.utils import get_unc_files
 
 def _read_imageset_file(path):
@@ -130,9 +130,9 @@ class NoiseKITTI(data.Dataset):
     if self.opt.unc_est:
       uncs = get_unc_files(self.uncs_dir)
     
-    result = get_official_eval_result(gt_annos, dt_annos, uncs, (0, 1, 2), self.opt, wandb)
+    result = get_official_eval_result(gt_annos, dt_annos, uncs, (0, 1, 2, 3, 4, 5, 6, 7, 8), self.opt, wandb, difficulties=[2])
 
-    ap_file = os.path.join(save_dir, f'results_ap_{self.opt.dataset}.txt')
+    """ ap_file = os.path.join(save_dir, f'results_ap_{self.opt.dataset}.txt')
     with open(ap_file, "w") as f:
       f.write(result)
-    print(result)
+    print(result) """

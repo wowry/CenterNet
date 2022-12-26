@@ -471,14 +471,19 @@ class DLASeg(nn.Module):
 
     def forward(self, x):
         x = self.base(x)
+
+        self.feature1 = x[2].clone().detach()
+        
         x = self.dla_up(x)
+
+        self.feature2 = x[0].clone().detach()
 
         y = []
         for i in range(self.last_level - self.first_level):
             y.append(x[i].clone())
         self.ida_up(y, 0, len(y))
 
-        self.feature = y[-1].clone().detach()
+        self.feature3 = y[-1].clone().detach()
 
         z = {}
         for head in self.heads:

@@ -169,7 +169,7 @@ class Debugger(object):
       cv2.circle(self.imgs[img_id], (rect1[0], rect2[1]), int(10 * conf), c, 1)
       cv2.circle(self.imgs[img_id], (rect2[0], rect1[1]), int(10 * conf), c, 1)
 
-  def add_coco_bbox(self, bbox, cat, conf=1, show_txt=True, img_id='default'): 
+  def add_coco_bbox(self, bbox, cat, conf=1, show_txt=True, img_id='default', cnt=0): 
     bbox = np.array(bbox, dtype=np.int32)
     # cat = (int(cat) + 1) % 80
     cat = int(cat)
@@ -177,7 +177,8 @@ class Debugger(object):
     c = self.colors[cat][0][0].tolist()
     if self.theme == 'white':
       c = (255 - np.array(c)).tolist()
-    txt = '{}{:.1f}'.format(self.names[cat], conf)
+    txt = '{}{:.2f}'.format(self.names[cat], conf)
+    txt = str(cnt)
     font = cv2.FONT_HERSHEY_SIMPLEX
     cat_size = cv2.getTextSize(txt, font, 0.5, 2)[0]
     cv2.rectangle(
@@ -223,7 +224,7 @@ class Debugger(object):
     else:
       self.ax = None
       nImgs = len(self.imgs)
-      fig=self.plt.figure(dpi=100, figsize=(nImgs * 12.42, 3.75))
+      fig=self.plt.figure(dpi=100, figsize=(nImgs * 12.8, 7.2))
       fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
       nCols = nImgs
       nRows = nImgs // nCols

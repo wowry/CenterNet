@@ -7,13 +7,25 @@ import numpy as np
 from progress.bar import Bar
 import time
 import torch
-
+from torchvision.transforms.functional import crop
+import torch.nn.functional as F
 from models.model import create_model, load_model
 from utils.image import get_affine_transform
 from utils.debugger import Debugger
 from lib.utils.gmm_utils import get_embeddings, gmm_fit, gmm_forward
 import utils.uncertainty_confidence as uncertainty_confidence
 
+HEIGHT = 96
+WIDTH = 96
+
+net = torch.load(f'/work/shuhei-ky/exp/CenterNet/models/gmm/kitti_centernet-6/overdet_pred_model.pth')
+
+X_min = []
+X_max = []
+
+for i in range(3):
+  X_min.append(torch.load(f"/work/shuhei-ky/exp/CenterNet/models/gmm/kitti_centernet-6/X{i}_min.pt"))
+  X_max.append(torch.load(f"/work/shuhei-ky/exp/CenterNet/models/gmm/kitti_centernet-6/X{i}_max.pt"))
 
 class BaseDetector(object):
   def __init__(self, opt, wandb):
@@ -101,9 +113,11 @@ class BaseDetector(object):
     load_time += (loaded_time - start_time)
 
     opt = self.opt
-    
+    outputs = []
     detections = []
     indices = []
+    hms = []
+    whs = []
     uncertainties = []
     for scale in self.scales:
       scale_start_time = time.time()
@@ -119,7 +133,9 @@ class BaseDetector(object):
       pre_process_time = time.time()
       pre_time += pre_process_time - scale_start_time
       
-      output, dets, inds, uncs, forward_time = self.process(images, return_time=True)
+      output, dets, inds, hm, wh, uncs, forward_time = self.process(images, return_time=True)
+      outputs.append(output)
+      hms.append(hm)
 
       torch.cuda.synchronize()
       net_time += forward_time - pre_process_time
@@ -136,10 +152,14 @@ class BaseDetector(object):
 
       detections.append(dets)
       indices.append(inds)
+      whs.append(wh)
       uncertainties.append(uncs)
     
     results = self.merge_outputs(detections)
+    output = outputs[0] # TODO: move into merge_outputs
     indices = indices[0] # TODO: move into merge_outputs
+    hms = hms[0] # TODO: move into merge_outputs
+    whs = whs[0] # TODO: move into merge_outputs
     uncertainties = uncertainties[0] # TODO: move into merge_outputs
 
     torch.cuda.synchronize()
@@ -148,8 +168,8 @@ class BaseDetector(object):
     if gmm_dict is not None:
       device = opt.device
       output_w = opt.output_w
-      gaussians_model = gmm_dict['gaussians_model']
-      train_min_density = gmm_dict['train_min_density']
+      gaussians_models = gmm_dict['gaussians_models']
+      #train_min_density = gmm_dict['train_min_density']
       hm = batch['all_classes_hm'].to(device)
       ind = batch['ind'][0].to(device)
       cls = batch['cls'][0].to(device)
@@ -164,28 +184,85 @@ class BaseDetector(object):
         valid_ind = torch.where(cls == -1) # unknown classes
       ind = ind[valid_ind]
       cls = cls[valid_ind]
-      log_probs_B_Y, log_prob_bg = gmm_forward(self.model, gaussians_model, ind, inds_bg, opt.output_w, opt.num_classes, opt.device, opt.flip_test)
+
+      y = torch.div(indices[0], output_w, rounding_mode='floor')
+      x = indices[0] % output_w
+
+      height = whs[0, :, 1]
+      width = whs[0, :, 0]
+
+      top = y - height / 2
+      left = x - width / 2
+
+      log_probs_B_Y, log_prob_bg, log_probs_all = gmm_forward(self.model, gaussians_models, results, indices[0], inds_bg, whs[0], opt.output_w, opt.output_h, opt.num_classes, opt.device, opt.flip_test)
       if log_probs_B_Y is not None:
-        density = uncertainty_confidence.logsumexp(log_probs_B_Y)
-        density_bg = uncertainty_confidence.logsumexp(log_prob_bg)
-        uncertainty = density - train_min_density
+        #density = uncertainty_confidence.logsumexp(log_probs_B_Y)
+        #density_bg = uncertainty_confidence.logsumexp(log_prob_bg)
+
+        densities_all = [
+          uncertainty_confidence.logsumexp(log_prob_all)
+          for log_prob_all in log_probs_all
+        ]
+
+        densities_bbox_list = [
+          [
+            crop(density_all.reshape(hm.shape), t, l, h, w) if (h > 0 and w > 0) else None for t, l, h, w in zip(top.int(), left.int(), height.int(), width.int())
+          ] for density_all in densities_all
+        ]
+
+        """ heatmaps_bbox_list = [
+          crop(hms[0], t, l, h, w) if (h > 0 and w > 0) else None for t, l, h, w in zip(top.int(), left.int(), height.int(), width.int())
+        ] """
+
+        preds_overdet = [] # 0 or 1 * 100
+
+        """ for i in range(100):
+          if densities_bbox_list[0][i] is not None:
+            densities_image = []
+            for j in range(3):
+              densities_ch = densities_bbox_list[j][i]
+
+              h, w = densities_ch.shape
+              hp = int((WIDTH - w) / 2)
+              vp = int((HEIGHT - h) / 2)
+              padding_density = (hp, WIDTH - (w + hp), vp, HEIGHT - (h + vp))
+
+              density_pad = F.pad(densities_ch, padding_density, 'constant', 0)
+
+              density_pad = (density_pad - X_min[j]) / (X_max[j] - X_min[j])
+
+              densities_image.append(density_pad)
+            densities_image = torch.stack(densities_image, dim=0)
+            pred = net(densities_image.unsqueeze(0).float().to(device))
+            pred = torch.sigmoid(pred)
+            preds_overdet.append(int(pred.item() >= 0.5))
+          else:
+            preds_overdet.append(0) """
+        
+        #densities_list = [uncertainty_confidence.logsumexp(log_probs) if log_probs is not None else None for log_probs in log_probs_list]
+        #uncertainty = density - train_min_density
       else:
         density, uncertainty = None, None
       torch.cuda.synchronize()
 
-      gmm_results['density'] = density
-      gmm_results['density_bg'] = density_bg
-      gmm_results['e_uncertainty'] = uncertainty
+      #gmm_results['hm'] = output['hm'].sigmoid_()
+      #gmm_results['heatmaps_bbox_list'] = heatmaps_bbox_list
+      #gmm_results['density'] = density
+      #gmm_results['density_bg'] = density_bg
+      #gmm_results['densities_all'] = densities_all
+      gmm_results['densities_bbox_list'] = densities_bbox_list
+      #gmm_results['preds_overdet'] = preds_overdet
+      #gmm_results['e_uncertainty'] = uncertainty
 
       all_hm = output['hm'] # 1, 3, 96, 320
-      r = torch.div(ind, opt.output_w, rounding_mode='floor')
-      c = ind % opt.output_w
-      logits = all_hm[0, :, r, c].permute(1, 0) # 100, 3
+      r = torch.div(indices[0], opt.output_w, rounding_mode='floor')
+      c = indices[0] % opt.output_w
+      logits = all_hm[0, :, r, c].sigmoid_().permute(1, 0) # 100, 3
       entropy = uncertainty_confidence.entropy(logits)
       torch.cuda.synchronize()
 
       gmm_results['logits'] = logits
-      gmm_results['entropy'] = entropy
+      #gmm_results['entropy'] = entropy
 
     torch.cuda.synchronize()
     end_time = time.time()
@@ -193,7 +270,7 @@ class BaseDetector(object):
     tot_time += end_time - start_time
 
     if opt.debug >= 1:
-      self.show_results(debugger, image, results)
+      self.show_results(debugger, image, results, image_or_path_or_tensor)
         
     return {'results': results, 'ind': indices, 'gmm_results': gmm_results, 'uncs': uncertainties, 'tot': tot_time, 'load': load_time,
             'pre': pre_time, 'net': net_time, 'dec': dec_time,

@@ -17,7 +17,7 @@ def centered_cov_torch(x):
 def get_embeddings(
     net, loader: torch.utils.data.DataLoader, output_w, device, flip_test=False
 ):
-    embeddings = torch.empty(0, device=device)
+    embeddings = [torch.empty(0, device=device)] * 3
     labels = torch.empty(0, device=device)
 
     with torch.no_grad():
@@ -34,49 +34,99 @@ def get_embeddings(
 
             if isinstance(net, nn.DataParallel):
                 out = net.module(data)
-                out = net.module.feature
+                out1 = net.module.feature1
+                out2 = net.module.feature2
+                out3 = net.module.feature3
             else:
                 out = net(data)
-                out = net.feature # 1, 64, 96, 320
+                out1 = net.feature1
+                out2 = net.feature2
+                out3 = net.feature3
                         
             r = torch.div(ind, output_w, rounding_mode='floor')
             c = ind % output_w
 
-            feature = out[0, :, r, c].permute(1, 0) # 64, N
+            features = [
+                out1[0, :, r, c].permute(1, 0),
+                out2[0, :, r, c].permute(1, 0),
+                out3[0, :, r, c].permute(1, 0),
+            ]
 
-            embeddings = torch.cat((embeddings, feature), dim=0).double()
+            embeddings = [torch.cat((embeddings[i], feature), dim=0).double() for i, feature in enumerate(features)]
             labels = torch.cat((labels, cls), dim=0)
     
-    print(embeddings.size())
     print(labels.size())
 
     return embeddings, labels
 
 
-def gmm_forward(net, gaussians_model, ind, inds_bg, output_w, num_classes, device, flip_test=False):
+def gmm_forward(net, gaussians_models, dets, ind, inds_bg, wh, output_w, output_h, num_classes, device, flip_test=False):
     log_probs_B_Y, log_prob_bg = None, None
 
+    y = torch.div(ind, output_w, rounding_mode='floor')
+    x = ind % output_w
+
     if isinstance(net, nn.DataParallel):
-        out = net.module.feature
+        out1 = net.module.feature1
+        out2 = net.module.feature2
+        out3 = net.module.feature3
     else:
-        out = net.feature
-    
-    r = torch.div(ind, output_w, rounding_mode='floor')
-    c = ind % output_w
+        out1 = net.feature1
+        out2 = net.feature2
+        out3 = net.feature3
 
     r_bg = torch.div(inds_bg, output_w, rounding_mode='floor')
     c_bg = inds_bg % output_w
 
-    features_B_Z = out[0, :, r, c].permute(1, 0) # 64, N
-    #features_B_Z = out[0, :, :, :].reshape(out.size()[1], -1).permute(1, 0) # 64, N
+    features_B_Z = out3[0, :, y, x].permute(1, 0)
 
-    features_bg = out[0, :, r_bg, c_bg].permute(1, 0) # 64, N
+    features_all = [
+        out1[0, :, :, :].reshape(64, -1).permute(1, 0),
+        out2[0, :, :, :].reshape(64, -1).permute(1, 0),
+        out3[0, :, :, :].reshape(64, -1).permute(1, 0),
+    ]
 
+    # bbox内のピクセルを含む特徴量
+    """ features_bboxes = []
+    for r_in_object, c_in_object in zip(r_in_objects, c_in_objects):
+        features_bboxes.append(out[0, :, r_in_object, c_in_object].permute(1, 0)) """
+    
+    """
+    out_pad = nn.functional.pad(out, (1, 1, 1, 1), mode='constant', value=1e10)
+    features_tl = out_pad[0, :, r, c].permute(1, 0)
+    features_t = out_pad[0, :, r, c + 1].permute(1, 0)
+    features_tr = out_pad[0, :, r, c + 2].permute(1, 0)
+    features_l = out_pad[0, :, r + 1, c].permute(1, 0)
+    features_r = out_pad[0, :, r + 1, c + 2].permute(1, 0)
+    features_bl = out_pad[0, :, r + 2, c].permute(1, 0)
+    features_b = out_pad[0, :, r + 2, c + 1].permute(1, 0)
+    features_br = out_pad[0, :, r + 2, c + 2].permute(1, 0)
+
+    # 周囲8ピクセルを含む特徴量
+    features_list = [features_B_Z, features_tl, features_t, features_tr, features_l, features_r, features_bl, features_b, features_br]
+    """
+    features_bg = out3[0, :, r_bg, c_bg].permute(1, 0) # 64, N
+
+    log_probs_list = []
     if features_B_Z.size()[0] > 0:
-        log_probs_B_Y = gaussians_model.log_prob(features_B_Z[:, None, :].double()) # N, 3
-        log_prob_bg = gaussians_model.log_prob(features_bg[:, None, :].double()) # N, 3
+        log_probs_B_Y = gaussians_models[2].log_prob(features_B_Z[:, None, :].double()) # N, 3
+        log_prob_bg = gaussians_models[2].log_prob(features_bg[:, None, :].double()) # N, 3
 
-    return log_probs_B_Y, log_prob_bg
+        log_prob_all = [
+            gaussians_model.log_prob(feature_all[:, None, :].double()) # 3, 96, 320
+            for gaussians_model, feature_all in zip(gaussians_models, features_all)
+        ]
+
+        """ for i, features_bbox in enumerate(features_bboxes):
+            try:
+                print(gaussians_model.log_prob(features_bbox[:, None, :].double()).shape)
+                print(len(r_in_objects[i]), len(c_in_objects[i]))
+                p = gaussians_model.log_prob(features_bbox[:, None, :].double()).reshape(len(r_in_objects[i]), len(c_in_objects[i]))
+            except:
+                p = None
+            log_probs_list.append(p) """
+
+    return log_probs_B_Y, log_prob_bg, log_prob_all
 
 
 def gmm_evaluate(net, gaussians_model, loader, output_w, output_h, num_classes, device):
@@ -131,24 +181,32 @@ def gmm_get_logits(gmm, embeddings):
     return log_probs_B_Y
 
 
-def gmm_fit(embeddings, labels, num_classes):
+def gmm_fit(embeddings_list, labels, num_classes):
+    mean_features_list = []
+    cov_features_list = []
     with torch.no_grad():
-        classwise_mean_features = torch.stack([torch.mean(embeddings[labels == c], dim=0) for c in range(num_classes)])
-        classwise_cov_features = torch.stack(
-            [centered_cov_torch(embeddings[labels == c] - classwise_mean_features[c]) for c in range(num_classes)]
-        )
-
+        for embeddings in embeddings_list:
+            classwise_mean_features = torch.stack([torch.mean(embeddings[labels == c], dim=0) for c in range(num_classes)])
+            classwise_cov_features = torch.stack(
+                [centered_cov_torch(embeddings[labels == c] - classwise_mean_features[c]) for c in range(num_classes)]
+            )
+            mean_features_list.append(classwise_mean_features)
+            cov_features_list.append(classwise_cov_features)
+    
+    gmm_list = []
     with torch.no_grad():
-        for jitter_eps in JITTERS:
-            try:
-                jitter = jitter_eps * torch.eye(
-                    classwise_cov_features.shape[1], device=classwise_cov_features.device,
-                ).unsqueeze(0)
-                gmm = torch.distributions.MultivariateNormal(
-                    loc=classwise_mean_features, covariance_matrix=(classwise_cov_features + jitter),
-                )
-            except:
-                continue
-            break
+        for classwise_mean_features, classwise_cov_features in zip(mean_features_list, cov_features_list):
+            for jitter_eps in JITTERS:
+                try:
+                    jitter = jitter_eps * torch.eye(
+                        classwise_cov_features.shape[1], device=classwise_cov_features.device,
+                    ).unsqueeze(0)
+                    gmm = torch.distributions.MultivariateNormal(
+                        loc=classwise_mean_features, covariance_matrix=(classwise_cov_features + jitter),
+                    )
+                    gmm_list.append(gmm)
+                except:
+                    continue
+                break
 
-    return gmm, jitter_eps
+    return gmm_list, jitter_eps

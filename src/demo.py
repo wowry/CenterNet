@@ -6,7 +6,7 @@ import _init_paths
 
 import os
 import cv2
-
+import wandb
 from opts import opts
 from datasets.dataset_factory import get_dataset
 from detectors.detector_factory import detector_factory
@@ -22,8 +22,13 @@ def demo(opt):
   print(opt.dataset)
   opt = opts().update_dataset_info_and_set_heads(opt, Dataset)
   print(opt)
+  wandb.init(
+    project=f'{opt.dataset}_{opt.task}',
+    name=f'{opt.exp_id}_test',
+    group=opt.exp_id,
+    config=opt)
   Detector = detector_factory[opt.task]
-  detector = Detector(opt)
+  detector = Detector(opt, wandb)
 
   if opt.demo == 'webcam' or \
     opt.demo[opt.demo.rfind('.') + 1:].lower() in video_ext:

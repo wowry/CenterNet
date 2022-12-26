@@ -42,12 +42,12 @@ class CtdetDetector(BaseDetector):
         reg = reg[0:1] if reg is not None else None
       torch.cuda.synchronize()
       forward_time = time.time()
-      dets, inds, uncs = ctdet_decode(hm, wh, self.opt, reg=reg, cat_spec_wh=self.opt.cat_spec_wh, K=self.opt.K)
+      dets, inds, wh, uncs = ctdet_decode(hm, wh, self.opt, reg=reg, cat_spec_wh=self.opt.cat_spec_wh, K=self.opt.K)
       
     if return_time:
-      return output, dets, inds, uncs, forward_time
+      return output, dets, inds, hm, wh, uncs, forward_time
     else:
-      return output, dets, inds, uncs
+      return output, dets, inds, hm, wh, uncs
 
   def post_process(self, dets, uncs, meta, scale=1):
     dets = dets.detach().cpu().numpy()
@@ -95,10 +95,14 @@ class CtdetDetector(BaseDetector):
                                  detection[i, k, 4], 
                                  img_id='out_pred_{:.1f}'.format(scale))
 
-  def show_results(self, debugger, image, results):
-    debugger.add_img(image, img_id='ctdet')
+  def show_results(self, debugger, image, results, file_name):
+    img_id = file_name.split('/')[-1].split('.')[0]
+    debugger.add_img(image, img_id=img_id)
+    cnt = -1
     for j in range(1, self.num_classes + 1):
       for bbox in results[j]:
+        cnt += 1
         if bbox[4] > self.opt.vis_thresh:
-          debugger.add_coco_bbox(bbox[:4], j - 1, bbox[4], img_id='ctdet')
-    debugger.show_all_imgs(pause=self.pause)
+          debugger.add_coco_bbox(bbox[:4], j - 1, bbox[4], img_id=img_id, cnt=cnt)
+    #debugger.show_all_imgs(pause=self.pause)
+    debugger.save_img(img_id, '/work/shuhei-ky/exp/CenterNet/exp/ctdet/bdd_centernet/debug/dets/')

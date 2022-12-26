@@ -13,7 +13,7 @@ import math
 
 import torch.utils.data as data
 import tools.kitti_eval.tool.kitti_common as kitti
-from tools.kitti_eval.tool.eval_auroc import get_official_eval_result
+from tools.kitti_eval.tool.eval2 import get_official_eval_result
 from tools.unc_eval.utils import get_unc_files
 
 def _read_imageset_file(path):
@@ -108,7 +108,7 @@ class KITTI(data.Dataset):
         f.close()
 
   def run_eval(self, results, uncs, save_dir, wandb):
-    self.results_dir = os.path.join(save_dir, f'results/{self.opt.dataset}/dets')
+    self.results_dir = os.path.join(save_dir, f'results/{self.split}/{self.opt.dataset}/dets')
     self.save_results(results)
     
     self.uncs_dir = os.path.join(save_dir, f'results/{self.opt.dataset}/uncs')
@@ -118,7 +118,7 @@ class KITTI(data.Dataset):
     dt_annos = kitti.get_label_annos(det_path)
 
     gt_path = os.path.join(self.opt.data_dir, 'kitti/training/label_2')
-    gt_split_file = os.path.join(gt_path, '../../ImageSets_3dop/val.txt')
+    gt_split_file = os.path.join(gt_path, f'../../ImageSets_3dop/{self.split}.txt')
     val_image_ids = _read_imageset_file(gt_split_file)
 
     id_label_info = {
@@ -130,7 +130,7 @@ class KITTI(data.Dataset):
     if self.opt.unc_est:
       uncs = get_unc_files(self.uncs_dir)
     
-    result = get_official_eval_result(gt_annos, dt_annos, uncs, (0, 1, 2), self.opt, wandb)
+    result = get_official_eval_result(gt_annos, dt_annos, uncs, (0, 1, 2, 3, 4, 5, 6, 7, 8), self.opt, wandb, difficulties=[2])
 
     """ ap_file = os.path.join(save_dir, f'results_ap_{self.opt.dataset}.txt')
     with open(ap_file, "w") as f:
