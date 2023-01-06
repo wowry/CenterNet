@@ -14,6 +14,8 @@ import tools.kitti_eval.tool.kitti_common as kitti
 from tools.kitti_eval.tool.eval2 import get_official_eval_result
 from tools.unc_eval.utils import get_unc_files, eval_encs
 
+val_size = 8000
+
 def _read_imageset_file(path):
     with open(path, 'r') as f:
         lines = f.readlines()
@@ -30,12 +32,12 @@ class BDD(data.Dataset):
   def __init__(self, opt, split):
     super(BDD, self).__init__()
     self.data_dir = os.path.join(opt.data_dir, 'bdd100k')
-    self.img_dir = os.path.join(self.data_dir, f'images/100k/{split}')
+    self.img_dir = os.path.join(self.data_dir, f'images/100k/{split}' if split != 'test' else 'images/100k/val')
 
     if split == 'test':
       self.annot_path = os.path.join(
-          self.data_dir, 'annotations', 
-          'test.json')
+          self.data_dir, 'labels', 
+          'val.json')
     else:
       if opt.task == 'exdet':
         self.annot_path = os.path.join(
@@ -51,6 +53,12 @@ class BDD(data.Dataset):
     self.cat_ids = {
       1: 0, 2: 2, 3: 1, 4: -3, 5: -3, 6: -3, 7: -3, 8: -3, 9: -3, 10: -3
     }
+    """ self.class_name = [
+      '__background__', 'pedestrian', 'rider', 'car', 'truck', 'bus', 'train',
+      'motorcycle', 'bicycle', 'trafficlight', 'trafficsign']
+    self.cat_ids = {
+      1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7, 9: 8, 10: 9
+    } """
     self.voc_color = [(v // 32 * 64 + 64, (v // 8) % 4 * 64, v % 8 * 32) \
                       for v in range(1, self.num_classes + 1)]
     self._data_rng = np.random.RandomState(123)
@@ -69,8 +77,11 @@ class BDD(data.Dataset):
 
     print('==> initializing BDD {} data.'.format(split))
     self.coco = coco.COCO(self.annot_path)
-    if split == 'train':
-      self.images = self.coco.getImgIds()[:5000]
+
+    if split == 'val':
+      self.images = self.coco.getImgIds()[:val_size]
+    elif split == 'test':
+      self.images = self.coco.getImgIds()[val_size:]
     else:
       self.images = self.coco.getImgIds()
     self.num_samples = len(self.images)
@@ -167,7 +178,7 @@ class BDD(data.Dataset):
           f.write('\n')
   
   def run_eval(self, results, uncs, save_dir, wandb):
-    results_dir = os.path.join(save_dir, f'results/{self.opt.dataset}/dets')
+    results_dir = os.path.join(save_dir, f'results/{self.split}/{self.opt.dataset}/dets')
     self.save_results(results_dir, results)
     
     uncs_dir = os.path.join(save_dir, f'results/{self.opt.dataset}/uncs')
@@ -178,7 +189,11 @@ class BDD(data.Dataset):
 
     gt_path = os.path.join(self.opt.data_dir, 'bdd100k/labels/labels')
     gt_json_path = os.path.join(gt_path, '../val.json')
-    val_image_ids = list(range(1, self.num_samples + 1))
+
+    if self.split == 'test':
+      val_image_ids = list(range(val_size + 1, val_size + self.num_samples + 1))
+    else:
+      val_image_ids = list(range(1, self.num_samples + 1))
 
     self.convert_labels_to_kitti_format(gt_path, gt_json_path)
     
@@ -191,7 +206,7 @@ class BDD(data.Dataset):
     if self.opt.unc_est:
       uncs = get_unc_files(uncs_dir)
     
-    result = get_official_eval_result(gt_annos, dt_annos, uncs, (0, 1, 2, 3, 4, 5, 6, 7, 8, 9), self.opt, wandb, difficulties=[2])
+    result = get_official_eval_result(gt_annos, dt_annos, uncs, (0, 1, 2), self.opt, wandb, difficulties=[2])
 
     """ ap_file = os.path.join(save_dir, f'results_ap_{self.opt.dataset}.txt')
     with open(ap_file, "w") as f:

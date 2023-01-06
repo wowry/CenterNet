@@ -178,7 +178,7 @@ class Debugger(object):
     if self.theme == 'white':
       c = (255 - np.array(c)).tolist()
     txt = '{}{:.2f}'.format(self.names[cat], conf)
-    txt = str(cnt)
+    #txt = str(cnt)
     font = cv2.FONT_HERSHEY_SIMPLEX
     cat_size = cv2.getTextSize(txt, font, 0.5, 2)[0]
     cv2.rectangle(

@@ -499,7 +499,7 @@ def ctdet_decode(heat, wh, opt, reg=None, cat_spec_wh=False, K=100):
     detections = torch.cat([bboxes_offset, scores, clses], dim=2)
 
     if not opt.unc_est:
-        return detections, inds, wh, None
+        return detections, inds, wh, reg, None
     
     '''
     Uncertainty Estimation

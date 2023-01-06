@@ -6,26 +6,30 @@ import cv2
 import numpy as np
 from progress.bar import Bar
 import time
+import math
 import torch
 from torchvision.transforms.functional import crop
-import torch.nn.functional as F
 from models.model import create_model, load_model
-from utils.image import get_affine_transform
+from utils.image import get_affine_transform, gaussian_radius, draw_umich_gaussian2, gaussian2D
 from utils.debugger import Debugger
-from lib.utils.gmm_utils import get_embeddings, gmm_fit, gmm_forward
+from lib.utils.gmm_utils import gmm_forward
 import utils.uncertainty_confidence as uncertainty_confidence
+from lib.models.networks.UNet import UNet
+from lib.models.networks.UNet_2inputs import UNet as UNet_2inputs
+from lib.models.networks.UNet_2inputs2 import UNet as UNet_2inputs2
+import matplotlib.pyplot as plt
+
+IS_NN = 0
+#prefix = 'threshold_center_'
+#prefix = 'threshold_'
+#prefix = '4ch_'
+#prefix = '2inputs_'
+prefix = '2inputs-2_rawhm_'
 
 HEIGHT = 96
 WIDTH = 96
 
-net = torch.load(f'/work/shuhei-ky/exp/CenterNet/models/gmm/kitti_centernet-6/overdet_pred_model.pth')
-
-X_min = []
-X_max = []
-
-for i in range(3):
-  X_min.append(torch.load(f"/work/shuhei-ky/exp/CenterNet/models/gmm/kitti_centernet-6/X{i}_min.pt"))
-  X_max.append(torch.load(f"/work/shuhei-ky/exp/CenterNet/models/gmm/kitti_centernet-6/X{i}_max.pt"))
+THRESHOLD = 0.15
 
 class BaseDetector(object):
   def __init__(self, opt, wandb):
@@ -47,6 +51,27 @@ class BaseDetector(object):
     self.scales = opt.test_scales
     self.opt = opt
     self.pause = True
+
+    gmm_dir = f'/work/shuhei-ky/exp/CenterNet/models/gmm/{opt.exp_id}'
+    
+    if 'threshold' in prefix:
+      self.density_threshold = torch.load(f"{gmm_dir}/{prefix}density_threshold_{opt.arch}.pt")
+    else:
+      if '4ch' in prefix:
+        self.overdet_model = UNet(4, 1, bilinear=False)
+      elif prefix == '2inputs_':
+        self.overdet_model = UNet_2inputs(3, 1, 1, bilinear=False)
+      else:
+        self.overdet_model = UNet_2inputs2(3, 1, 1, bilinear=False)
+      self.overdet_model.load_state_dict(torch.load(f'{gmm_dir}/{prefix}u-net_weight.pt'))
+      self.overdet_model = self.overdet_model.to(opt.device)
+      self.overdet_model.eval()
+
+      self.X_mean = []
+      self.X_std = []
+      for i in range(3):
+        self.X_mean.append(torch.load(f'{gmm_dir}/X{i}_mean.pt'))
+        self.X_std.append(torch.load(f'{gmm_dir}/X{i}_std.pt'))
 
   def pre_process(self, image, scale, meta=None):
     height, width = image.shape[0:2]
@@ -93,7 +118,7 @@ class BaseDetector(object):
   def show_results(self, debugger, image, results):
    raise NotImplementedError
 
-  def run(self, image_or_path_or_tensor, gmm_dict=None, batch=None, meta=None):
+  def run(self, image_or_path_or_tensor, gmm_dict=None, batch=None, meta=None, X2=None):
     load_time, pre_time, net_time, dec_time, post_time = 0, 0, 0, 0, 0
     merge_time, tot_time = 0, 0
     debugger = Debugger(dataset=self.opt.dataset, ipynb=(self.opt.debug==3),
@@ -114,10 +139,13 @@ class BaseDetector(object):
 
     opt = self.opt
     outputs = []
+    classes = []
+    raw_dets = []
     detections = []
     indices = []
     hms = []
     whs = []
+    regs= []
     uncertainties = []
     for scale in self.scales:
       scale_start_time = time.time()
@@ -133,7 +161,9 @@ class BaseDetector(object):
       pre_process_time = time.time()
       pre_time += pre_process_time - scale_start_time
       
-      output, dets, inds, hm, wh, uncs, forward_time = self.process(images, return_time=True)
+      output, dets, inds, hm, wh, reg, uncs, forward_time = self.process(images, return_time=True)
+      raw_dets.append(dets.clone())
+      clses = dets[0, :, -1]
       outputs.append(output)
       hms.append(hm)
 
@@ -151,76 +181,143 @@ class BaseDetector(object):
       post_time += post_process_time - decode_time
 
       detections.append(dets)
+      classes.append(clses)
       indices.append(inds)
       whs.append(wh)
+      regs.append(reg)
       uncertainties.append(uncs)
     
     results = self.merge_outputs(detections)
     output = outputs[0] # TODO: move into merge_outputs
+    clses = classes[0] # TODO: move into merge_outputs
     indices = indices[0] # TODO: move into merge_outputs
     hms = hms[0] # TODO: move into merge_outputs
     whs = whs[0] # TODO: move into merge_outputs
+    regs = regs[0]
+    raw_dets = raw_dets[0]
     uncertainties = uncertainties[0] # TODO: move into merge_outputs
 
     torch.cuda.synchronize()
     
     gmm_results = {}
     if gmm_dict is not None:
-      device = opt.device
-      output_w = opt.output_w
       gaussians_models = gmm_dict['gaussians_models']
-      #train_min_density = gmm_dict['train_min_density']
-      hm = batch['all_classes_hm'].to(device)
-      ind = batch['ind'][0].to(device)
-      cls = batch['cls'][0].to(device)
 
-      hm = torch.sum(hm[0, :, :, :], dim=0)
-      inds_bg_r, inds_bg_c = torch.where(hm == 0)
-      inds_bg = inds_bg_r * output_w + inds_bg_c
+      raw_dets[0, :, 0] -= regs[0, :, 0]
+      raw_dets[0, :, 1] -= regs[0, :, 1]
 
-      if opt.dataset == 'kitti':
-        valid_ind = torch.where(cls != -1) # known classes
+      # rawdetsをクラス順にソート
+      classes = raw_dets[0, :, -1]
+      ret = []
+      for cls in range(3):
+        inds = (classes == cls)
+        ret.append(raw_dets[0, inds, :])
+      ret = torch.cat(ret, dim=0)
+
+      left = ret[:, 0]
+      top = ret[:, 1]
+      width = ret[:, 2] - ret[:, 0]
+      height = ret[:, 3] - ret[:, 1]
+      size = torch.stack([width, height], dim=1)
+      score = ret[:, 4]
+      center = torch.stack([left + width / 2, top + height / 2], dim=1) # 100 2
+      x = center[:, 0]
+      y = center[:, 1]
+
+      log_probs_all = gmm_forward(self.model, gaussians_models, only_last=('threshold' in prefix))
+
+      densities_all = [
+        uncertainty_confidence.logsumexp(log_prob_all)
+        for log_prob_all in log_probs_all
+      ]
+      densities_all = torch.stack(densities_all).reshape(len(densities_all), opt.output_h, opt.output_w)
+
+      if prefix == 'threshold_center_':
+        densities_center = densities_all[0].reshape(opt.output_h, opt.output_w)[y.long(), x.long()]
+
+        preds_overdet = []
+
+        for density in densities_center:
+          if density is not None:
+            preds_overdet.append(int(density < self.density_threshold))
+          else:
+            preds_overdet.append(0)
+      elif prefix == 'threshold_':
+        densities_layer_list = [crop(densities_all[0].reshape(opt.output_h, opt.output_w), t, l, HEIGHT, WIDTH) if (h > 0 and w > 0 and s >= THRESHOLD) else None for t, l, h, w, s in zip(top.int(), left.int(), height.int(), width.int(), score)]
+
+        preds_overdet = []
+        densities_mean = []
+
+        for density in densities_layer_list:
+          if density is not None:
+            densities_mean.append(density.mean())
+            preds_overdet.append(int(density.mean() < self.density_threshold))
+          else:
+            densities_mean.append(None)
+            preds_overdet.append(0)
       else:
-        valid_ind = torch.where(cls == -1) # unknown classes
-      ind = ind[valid_ind]
-      cls = cls[valid_ind]
+        X = densities_all
+        for i in range(3):
+          X[i] = (X[i] - self.X_mean[i]) / self.X_std[i]
+        
+        """ hm = np.zeros((opt.output_h, opt.output_w), dtype=np.float32)
 
-      y = torch.div(indices[0], output_w, rounding_mode='floor')
-      x = indices[0] % output_w
+        radius = [max(0, int(gaussian_radius((math.ceil(s[1].item()), math.ceil(s[0].item()))))) for s in size]
+        ct_int = [c.int().numpy() for c in center.cpu()]
+        diameter = [2 * r + 1 for r in radius]
+        gaussian = [gaussian2D((d, d), sigma=d / 6) for d in diameter]
+        hm_list = [draw_umich_gaussian2(hm, ct_int[i], radius[i], gaussian[i]) for i in range(len(center))] """
+    
+        """ for c, s in zip(center.cpu(), size):
+          w, h = s
+          radius = gaussian_radius((math.ceil(h.item()), math.ceil(w.item())))
+          radius = max(0, int(radius))
+          ct_int = c.int().numpy()
+          diameter = 2 * radius + 1
+          gaussian = gaussian2D((diameter, diameter), sigma=diameter / 6)
+          draw_umich_gaussian2(hm, ct_int, radius, gaussian) """
+        
+        X2 = torch.sum(hms[0], dim=0)
 
-      height = whs[0, :, 1]
-      width = whs[0, :, 0]
+        X = X.unsqueeze(0).float()
+        #X2 = torch.from_numpy(hm).clone().to(opt.device)
+        X2 = X2.unsqueeze(0).unsqueeze(0).float()
 
-      top = y - height / 2
-      left = x - width / 2
+        if '4ch' in prefix:
+          images = torch.cat([X, X2], dim=1)
+          output = self.overdet_model(images)
+        elif '2inputs' in prefix:
+          output = self.overdet_model(X, X2)
+        output = output.squeeze()
 
-      log_probs_B_Y, log_prob_bg, log_probs_all = gmm_forward(self.model, gaussians_models, results, indices[0], inds_bg, whs[0], opt.output_w, opt.output_h, opt.num_classes, opt.device, opt.flip_test)
-      if log_probs_B_Y is not None:
-        #density = uncertainty_confidence.logsumexp(log_probs_B_Y)
-        #density_bg = uncertainty_confidence.logsumexp(log_prob_bg)
+        output = output[y.long(), x.long()]
+        preds_overdet = (output.clone().detach() < 0.3).int()
 
-        densities_all = [
-          uncertainty_confidence.logsumexp(log_prob_all)
-          for log_prob_all in log_probs_all
-        ]
 
-        densities_bbox_list = [
-          [
-            crop(density_all.reshape(hm.shape), t, l, h, w) if (h > 0 and w > 0) else None for t, l, h, w in zip(top.int(), left.int(), height.int(), width.int())
-          ] for density_all in densities_all
-        ]
+      """ heatmaps_bbox_list = [
+        crop(hms[0], t, l, HEIGHT, WIDTH) if (h > 0 and w > 0 and s >= THRESHOLD) else None for t, l, h, w, s in zip(top.int(), left.int(), height.int(), width.int(), score)
+      ] """
 
-        """ heatmaps_bbox_list = [
-          crop(hms[0], t, l, h, w) if (h > 0 and w > 0) else None for t, l, h, w in zip(top.int(), left.int(), height.int(), width.int())
-        ] """
+      #preds_overdet = [] # 0 or 1 * 100
 
-        preds_overdet = [] # 0 or 1 * 100
+      if IS_NN == True:
+        pass
+        #pred_list = pred[y, x]
+
+        """ X_mean = []
+        X_std = []
+
+        for i in range(3):
+          X_mean.append(torch.load(f"/work/shuhei-ky/exp/CenterNet/models/gmm/bdd_centernet-2/X{i}_mean.pt"))
+          X_std.append(torch.load(f"/work/shuhei-ky/exp/CenterNet/models/gmm/bdd_centernet-2/X{i}_std.pt")) """
 
         """ for i in range(100):
           if densities_bbox_list[0][i] is not None:
+            cls = clses[i]
             densities_image = []
             for j in range(3):
-              densities_ch = densities_bbox_list[j][i]
+              density = densities_bbox_list[j][i]
+              heatmap = heatmaps_bbox_list[i]
 
               h, w = densities_ch.shape
               hp = int((WIDTH - w) / 2)
@@ -229,40 +326,31 @@ class BaseDetector(object):
 
               density_pad = F.pad(densities_ch, padding_density, 'constant', 0)
 
-              density_pad = (density_pad - X_min[j]) / (X_max[j] - X_min[j])
+              density_pad = (density_pad - X_mean[j]) / X_std[j]
 
               densities_image.append(density_pad)
-            densities_image = torch.stack(densities_image, dim=0)
-            pred = net(densities_image.unsqueeze(0).float().to(device))
+              density *= heatmap[cls.int().item()]
+              density = (density - X_mean[j]) / X_std[j]
+              densities_image.append(density)
+            densities_image = torch.stack(densities_image, dim=0).unsqueeze(0).float().to(opt.device)
+            pred = net(densities_image)
             pred = torch.sigmoid(pred)
             preds_overdet.append(int(pred.item() >= 0.5))
           else:
             preds_overdet.append(0) """
-        
-        #densities_list = [uncertainty_confidence.logsumexp(log_probs) if log_probs is not None else None for log_probs in log_probs_list]
-        #uncertainty = density - train_min_density
-      else:
-        density, uncertainty = None, None
-      torch.cuda.synchronize()
 
-      #gmm_results['hm'] = output['hm'].sigmoid_()
+      #gmm_results['densities_bbox_list'] = densities_bbox_list
       #gmm_results['heatmaps_bbox_list'] = heatmaps_bbox_list
-      #gmm_results['density'] = density
-      #gmm_results['density_bg'] = density_bg
-      #gmm_results['densities_all'] = densities_all
-      gmm_results['densities_bbox_list'] = densities_bbox_list
-      #gmm_results['preds_overdet'] = preds_overdet
-      #gmm_results['e_uncertainty'] = uncertainty
-
-      all_hm = output['hm'] # 1, 3, 96, 320
-      r = torch.div(indices[0], opt.output_w, rounding_mode='floor')
-      c = indices[0] % opt.output_w
-      logits = all_hm[0, :, r, c].sigmoid_().permute(1, 0) # 100, 3
-      entropy = uncertainty_confidence.entropy(logits)
-      torch.cuda.synchronize()
-
-      gmm_results['logits'] = logits
-      #gmm_results['entropy'] = entropy
+      #gmm_results['heatmaps_all'] = hms[0]
+      #gmm_results['size'] = size
+      #gmm_results['center'] = center
+      gmm_results['preds_overdet'] = preds_overdet
+      if prefix == 'threshold_':
+        gmm_results['densities_mean'] = densities_mean
+      #gmm_results['densities_center'] = densities_center
+      #gmm_results['densities_all_0'] = densities_all[0].reshape(hm.shape[2:])
+      #gmm_results['densities_all_1'] = densities_all[1].reshape(hm.shape[2:])
+      #gmm_results['densities_all_2'] = densities_all[2].reshape(hm.shape[2:])
 
     torch.cuda.synchronize()
     end_time = time.time()

@@ -39,6 +39,7 @@ def create_model(arch, heads, head_conv, opt):
     model = get_model(num_layers=num_layers, heads=heads, head_conv=head_conv, opt=opt)
   else:
     model = get_model(num_layers=num_layers, heads=heads, head_conv=head_conv)
+  
   return model
 
 def load_model(model, model_path, optimizer=None, resume=False, 

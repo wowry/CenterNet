@@ -22,6 +22,14 @@ from detectors.detector_factory import detector_factory
 
 from lib.utils.gmm_utils import get_embeddings, gmm_fit, gmm_evaluate
 
+""" dataset = 'bdd'
+split = 'test'
+exp_id = 'bdd_centernet-2'
+arch = 'dladcnddu_34'
+exp_dir = f'/work/shuhei-ky/exp/CenterNet/exp/ctdet/{exp_id}'
+gmm_dir = f'/work/shuhei-ky/exp/CenterNet/models/gmm/{exp_id}'
+dets_path = f"{exp_dir}/results/{split}/bdd/dets" """
+
 class PrefetchDataset(torch.utils.data.Dataset):
   def __init__(self, opt, dataset, pre_process_func):
     self.images = dataset.images
@@ -61,7 +69,7 @@ def prefetch_test(opt):
     config=opt)
   Detector = detector_factory[opt.task]
   
-  split = 'val' if not opt.trainval else 'test'
+  split = 'test' if not opt.trainval else 'test'
   dataset = Dataset(opt, split)
   detector = Detector(opt, wandb)
   
@@ -80,6 +88,7 @@ def prefetch_test(opt):
   )
 
   prefix = ''
+  should_skip = 1
 
   if 'ddu' in opt.arch:
     gmm_folderpath = f'../models/gmm/{opt.exp_id}'
@@ -89,7 +98,6 @@ def prefetch_test(opt):
     train_dataset = 'bdd'
     
     gaussians_model_path = os.path.join(gmm_folderpath, f'{prefix}gaussians_model_{train_dataset}.pt')
-    train_densities_path = os.path.join(gmm_folderpath, f'{prefix}train_densities_{opt.dataset}.pt')
 
     if opt.dataset == train_dataset and not os.path.exists(gaussians_model_path):
       embeddings, labels = get_embeddings(
@@ -100,64 +108,57 @@ def prefetch_test(opt):
           opt.flip_test,
       )
 
-      gaussians_models, jitter_eps = gmm_fit(embeddings, labels, num_classes=3)
+      gaussians_models, _ = gmm_fit(embeddings, labels, num_classes=3)
       torch.save(gaussians_models, gaussians_model_path)
-    
-      """ train_log_probs_B_Y, _ = gmm_evaluate(detector.model, gaussians_model, train_loader, opt.output_w, opt.output_h, opt.num_classes, opt.device)
-      train_densities = torch.logsumexp(train_log_probs_B_Y, dim=-1)
-      torch.save(train_densities, train_densities_path) """
     else:
       gaussians_models = torch.load(gaussians_model_path)
-      #train_densities = torch.load(train_densities_path)
-    
-    #train_min_density = train_densities.min().item()
     
     gmm_dict = {
       'gaussians_models': gaussians_models,
-      #'train_min_density': train_min_density,
     }
+  
+  #heatmaps_all = torch.load(f"{exp_dir}/heatmaps_all_test_bdd.pt")
+  #heatmaps_all = torch.stack([torch.from_numpy(hm).clone() for hm in heatmaps_all]).unsqueeze(1).to(opt.device)
 
   num_iters = len(dataset)
   results = {}
-  logits = torch.empty(0, device=opt.device)
-  densities = torch.empty(0, device=opt.device)
-  #densities_bg = torch.empty(0, device=opt.device)
-  #heatmaps = []
-  heatmaps_bbox_list = []
-  #densities_all = []
+  densities_list = []
+  densities_mean_list = []
   density_bbox_list = []
-  #epistemic_uncertainties = []
-  #aleatoric_uncertainties = []
-  #preds_overdet_list = []
-  #entropies = torch.empty(0, device=opt.device)
+  heatmaps_bbox_list = []
+  heatmaps_all_list = []
+  preds_overdet_list = []
+  center_list = []
+  size_list = []
+  densities_all_0_list = []
+  densities_all_1_list = []
+  densities_all_2_list = []
   uncs = {}
   bar = Bar('{}'.format(opt.exp_id), max=num_iters)
   time_stats = ['tot', 'load', 'pre', 'net', 'dec', 'post', 'merge']
   avg_time_stats = {t: AverageMeter() for t in time_stats}
   has_skip = True
   for ind, ((img_id, pre_processed_images), gt) in enumerate(zip(data_loader, val_loader)):
+    if should_skip == True:
+      break
     has_skip = False
     id = img_id.numpy().astype(np.int32)[0]
     if 'ddu' in opt.arch:
-      ret = detector.run(pre_processed_images, gmm_dict=gmm_dict, batch=gt)
+      ret = detector.run(pre_processed_images, gmm_dict=gmm_dict, batch=gt)#, X2=heatmaps_all[ind])
       gmm_results = ret['gmm_results']
-      """ if 'kitti' in opt.dataset \
-        or ('kitti' not in opt.dataset and (False not in (gt['cls'] < 0))): """
       results[id] = ret['results']
-      logits = torch.cat((logits, gmm_results['logits']))
-
-      #heatmaps.append(gmm_results['hm'])
-      heatmaps_bbox_list.append(gmm_results['heatmaps_bbox_list'])
-      #preds_overdet_list.append(torch.tensor(gmm_results['preds_overdet'])) # 100
-
-      #if gmm_results['density'] is not None:
-        #densities = torch.cat((densities, gmm_results['density']))
-        #densities_bg = torch.cat((densities_bg, gmm_results['density_bg']))
-        #densities_all.append(gmm_results['densities_all'])
-      density_bbox_list.append(gmm_results['densities_bbox_list'])
-      entropies = torch.cat((entropies, gmm_results['entropy']))
-      #epistemic_uncertainties.append(gmm_results['density'])
-      #aleatoric_uncertainties.append(gmm_results['entropy'])
+      #size_list.append(gmm_results['size'])
+      #densities_list.append(gmm_results['densities_center'])
+      if 'densities_mean' in gmm_results.keys():
+        densities_mean_list.append(gmm_results['densities_mean'])
+      #density_bbox_list.append(gmm_results['densities_bbox_list'])
+      #heatmaps_bbox_list.append(gmm_results['heatmaps_bbox_list'])
+      #heatmaps_all_list.append(gmm_results['heatmaps_all'])
+      preds_overdet_list.append(torch.tensor(gmm_results['preds_overdet']))
+      #center_list.append(gmm_results['center'])
+      #densities_all_0_list.append(gmm_results['densities_all_0'])
+      #densities_all_1_list.append(gmm_results['densities_all_1'])
+      #densities_all_2_list.append(gmm_results['densities_all_2'])
     else:
       ret = detector.run(pre_processed_images)
       results[id] = ret['results']
@@ -177,6 +178,7 @@ def prefetch_test(opt):
       uncs[id]['loc'] = ret['uncs']['loc'][0]
       uncs[id]['dim'] = ret['uncs']['dim'][0]
       uncs[id]['cls'] = ret['uncs']['cls'][0]
+    
     Bar.suffix = '[{0}/{1}]|Tot: {total:} |ETA: {eta:} '.format(
                    ind, num_iters, total=bar.elapsed_td, eta=bar.eta_td)
     for t in avg_time_stats:
@@ -190,20 +192,20 @@ def prefetch_test(opt):
     print("FPS:", 1 / avg_time_stats['tot'].avg)
 
   if 'ddu' in opt.arch and not has_skip:
-    #epistemic_uncertainties = torch.stack(epistemic_uncertainties)
-    #aleatoric_uncertainties = torch.stack(aleatoric_uncertainties)
-
-    #torch.save(torch.stack(preds_overdet_list), os.path.join(gmm_folderpath, f'{prefix}preds_overdet_list_{split}_{opt.dataset}.pt'))
-    #torch.save(heatmaps, os.path.join(gmm_folderpath, f'{prefix}heatmaps_{split}_{opt.dataset}.pt'))
-    torch.save(heatmaps_bbox_list, os.path.join(gmm_folderpath, f'{prefix}heatmaps_bbox_list_{split}_{opt.dataset}.pt'))
-    torch.save(logits, os.path.join(gmm_folderpath, f'{prefix}logits_{split}_{opt.dataset}.pt'))
-    #torch.save(densities, os.path.join(gmm_folderpath, f'{prefix}densities_{split}_{opt.dataset}.pt'))
-    #torch.save(densities_bg, os.path.join(gmm_folderpath, f'{prefix}densities_bg_{split}_{opt.dataset}.pt'))
-    #torch.save(densities_all, os.path.join(gmm_folderpath, f'{prefix}densities_all_{split}_{opt.dataset}.pt'))
-    torch.save(density_bbox_list, os.path.join(gmm_folderpath, f'{prefix}densities_bbox_list_{split}_{opt.dataset}.pt'))
-    #torch.save(epistemic_uncertainties, os.path.join(gmm_folderpath, f'{prefix}epistemic_uncertainties_{split}_{opt.dataset}.pt'))
-    #torch.save(aleatoric_uncertainties, os.path.join(gmm_folderpath, f'{prefix}aleatoric_uncertainties_{split}_{opt.dataset}.pt'))
-    #torch.save(entropies, os.path.join(gmm_folderpath, f'{prefix}entropies_{split}_{opt.dataset}.pt'))
+    if split == 'test':
+      print("Saved preds_overdet_list")
+      torch.save(torch.stack(preds_overdet_list), os.path.join(gmm_folderpath, f'{prefix}preds_overdet_list_{split}_{opt.dataset}.pt'))
+    #torch.save(torch.stack(heatmaps_all_list), os.path.join(gmm_folderpath, f'{prefix}heatmaps_all_list_{split}_{opt.dataset}.pt'))
+    #torch.save(heatmaps_bbox_list, os.path.join(gmm_folderpath, f'{prefix}heatmaps_bbox_list_{split}_{opt.dataset}.pt'))
+    #torch.save(density_bbox_list, os.path.join(gmm_folderpath, f'{prefix}densities_bbox_list_{split}_{opt.dataset}.pt'))
+    #torch.save(center_list, os.path.join(gmm_folderpath, f'{prefix}center_list_{split}_{opt.dataset}.pt'))
+    #torch.save(size_list, os.path.join(gmm_folderpath, f'{prefix}size_list_{split}_{opt.dataset}.pt'))
+    if len(densities_mean_list) > 0:
+      torch.save(densities_mean_list, os.path.join(gmm_folderpath, f'{prefix}densities_mean_list_{split}_{opt.dataset}.pt'))
+    #torch.save(densities_list, os.path.join(gmm_folderpath, f'{prefix}densities_center_{split}_{opt.dataset}.pt'))
+    #torch.save(densities_all_0_list, os.path.join(gmm_folderpath, f'{prefix}densities_all_0_list_{split}_{opt.dataset}.pt'))
+    #torch.save(densities_all_1_list, os.path.join(gmm_folderpath, f'{prefix}densities_all_1_list_{split}_{opt.dataset}.pt'))
+    #torch.save(densities_all_2_list, os.path.join(gmm_folderpath, f'{prefix}densities_all_2_list_{split}_{opt.dataset}.pt'))
   dataset.run_eval(results, uncs, opt.save_dir, wandb)
 
 def test(opt):

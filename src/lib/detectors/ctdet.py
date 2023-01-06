@@ -42,12 +42,12 @@ class CtdetDetector(BaseDetector):
         reg = reg[0:1] if reg is not None else None
       torch.cuda.synchronize()
       forward_time = time.time()
-      dets, inds, wh, uncs = ctdet_decode(hm, wh, self.opt, reg=reg, cat_spec_wh=self.opt.cat_spec_wh, K=self.opt.K)
+      dets, inds, wh, reg, uncs = ctdet_decode(hm, wh, self.opt, reg=reg, cat_spec_wh=self.opt.cat_spec_wh, K=self.opt.K)
       
     if return_time:
-      return output, dets, inds, hm, wh, uncs, forward_time
+      return output, dets, inds, hm, wh, reg, uncs, forward_time
     else:
-      return output, dets, inds, hm, wh, uncs
+      return output, dets, inds, hm, wh, reg, uncs
 
   def post_process(self, dets, uncs, meta, scale=1):
     dets = dets.detach().cpu().numpy()

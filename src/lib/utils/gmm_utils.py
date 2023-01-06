@@ -60,73 +60,35 @@ def get_embeddings(
     return embeddings, labels
 
 
-def gmm_forward(net, gaussians_models, dets, ind, inds_bg, wh, output_w, output_h, num_classes, device, flip_test=False):
-    log_probs_B_Y, log_prob_bg = None, None
-
-    y = torch.div(ind, output_w, rounding_mode='floor')
-    x = ind % output_w
-
+def gmm_forward(net, gaussians_models, only_last=False):
     if isinstance(net, nn.DataParallel):
-        out1 = net.module.feature1
-        out2 = net.module.feature2
+        if not only_last:
+            out1 = net.module.feature1
+            out2 = net.module.feature2
         out3 = net.module.feature3
     else:
-        out1 = net.feature1
-        out2 = net.feature2
+        if not only_last:
+            out1 = net.feature1
+            out2 = net.feature2
         out3 = net.feature3
-
-    r_bg = torch.div(inds_bg, output_w, rounding_mode='floor')
-    c_bg = inds_bg % output_w
-
-    features_B_Z = out3[0, :, y, x].permute(1, 0)
-
-    features_all = [
-        out1[0, :, :, :].reshape(64, -1).permute(1, 0),
-        out2[0, :, :, :].reshape(64, -1).permute(1, 0),
-        out3[0, :, :, :].reshape(64, -1).permute(1, 0),
-    ]
-
-    # bbox内のピクセルを含む特徴量
-    """ features_bboxes = []
-    for r_in_object, c_in_object in zip(r_in_objects, c_in_objects):
-        features_bboxes.append(out[0, :, r_in_object, c_in_object].permute(1, 0)) """
     
-    """
-    out_pad = nn.functional.pad(out, (1, 1, 1, 1), mode='constant', value=1e10)
-    features_tl = out_pad[0, :, r, c].permute(1, 0)
-    features_t = out_pad[0, :, r, c + 1].permute(1, 0)
-    features_tr = out_pad[0, :, r, c + 2].permute(1, 0)
-    features_l = out_pad[0, :, r + 1, c].permute(1, 0)
-    features_r = out_pad[0, :, r + 1, c + 2].permute(1, 0)
-    features_bl = out_pad[0, :, r + 2, c].permute(1, 0)
-    features_b = out_pad[0, :, r + 2, c + 1].permute(1, 0)
-    features_br = out_pad[0, :, r + 2, c + 2].permute(1, 0)
-
-    # 周囲8ピクセルを含む特徴量
-    features_list = [features_B_Z, features_tl, features_t, features_tr, features_l, features_r, features_bl, features_b, features_br]
-    """
-    features_bg = out3[0, :, r_bg, c_bg].permute(1, 0) # 64, N
-
-    log_probs_list = []
-    if features_B_Z.size()[0] > 0:
-        log_probs_B_Y = gaussians_models[2].log_prob(features_B_Z[:, None, :].double()) # N, 3
-        log_prob_bg = gaussians_models[2].log_prob(features_bg[:, None, :].double()) # N, 3
-
-        log_prob_all = [
-            gaussians_model.log_prob(feature_all[:, None, :].double()) # 3, 96, 320
-            for gaussians_model, feature_all in zip(gaussians_models, features_all)
+    if only_last:
+        features = [
+            out3[0, :, :, :].reshape(64, -1).permute(1, 0)
+        ]
+    else:
+        features = [
+            out1[0, :, :, :].reshape(64, -1).permute(1, 0),
+            out2[0, :, :, :].reshape(64, -1).permute(1, 0),
+            out3[0, :, :, :].reshape(64, -1).permute(1, 0),
         ]
 
-        """ for i, features_bbox in enumerate(features_bboxes):
-            try:
-                print(gaussians_model.log_prob(features_bbox[:, None, :].double()).shape)
-                print(len(r_in_objects[i]), len(c_in_objects[i]))
-                p = gaussians_model.log_prob(features_bbox[:, None, :].double()).reshape(len(r_in_objects[i]), len(c_in_objects[i]))
-            except:
-                p = None
-            log_probs_list.append(p) """
+    log_prob_all = [
+        gaussians_model.log_prob(feature_all[:, None, :].double()) # 3, 96, 320
+        for gaussians_model, feature_all in zip(gaussians_models, features)
+    ]
 
-    return log_probs_B_Y, log_prob_bg, log_prob_all
+    return log_prob_all
 
 
 def gmm_evaluate(net, gaussians_model, loader, output_w, output_h, num_classes, device):
