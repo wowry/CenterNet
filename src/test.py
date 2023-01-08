@@ -79,13 +79,6 @@ def prefetch_test(opt):
   val_loader = torch.utils.data.DataLoader(
       dataset,
       batch_size=1, shuffle=False, num_workers=1, pin_memory=True)
-  train_loader = torch.utils.data.DataLoader(
-      Dataset(opt, 'train'), 
-      batch_size=1, 
-      shuffle=False,
-      drop_last=False,
-      num_workers=opt.num_workers,
-  )
 
   prefix = ''
   should_skip = 1
@@ -100,6 +93,14 @@ def prefetch_test(opt):
     gaussians_model_path = os.path.join(gmm_folderpath, f'{prefix}gaussians_model_{train_dataset}.pt')
 
     if opt.dataset == train_dataset and not os.path.exists(gaussians_model_path):
+      train_loader = torch.utils.data.DataLoader(
+        Dataset(opt, 'train'), 
+        batch_size=1, 
+        shuffle=False,
+        drop_last=False,
+        num_workers=opt.num_workers,
+      )
+
       embeddings, labels = get_embeddings(
           detector.model,
           train_loader,
@@ -116,9 +117,6 @@ def prefetch_test(opt):
     gmm_dict = {
       'gaussians_models': gaussians_models,
     }
-  
-  #heatmaps_all = torch.load(f"{exp_dir}/heatmaps_all_test_bdd.pt")
-  #heatmaps_all = torch.stack([torch.from_numpy(hm).clone() for hm in heatmaps_all]).unsqueeze(1).to(opt.device)
 
   num_iters = len(dataset)
   results = {}
